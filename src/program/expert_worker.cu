@@ -1,0 +1,862 @@
+// src/program/expert_worker.cu - strata-expert-worker: standalone MoE expert worker service.
+//
+// Runs on the worker host's GPU device 0 (e.g. AMD Radeon RX 6800 XT gfx1030 via HIP, or CUDA device 0).
+// Preloads an immutable set of (layer, expert) native blobs into VRAM upon INSTALL_PLAN (or at startup via
+// --placement), executes grouped expert kernels + GPU-side weighted partial-sum reduction per EXECUTE request,
+// and returns at most one FP32 vector per token plus explicit coverage mask and microsecond stage timings.
+
+#include "strata/artifact/gguf_reader.hpp"
+#include "strata/core/expert_worker_identity.hpp"
+#include "strata/core/expert_worker_wire.hpp"
+#include "strata/core/family_layout.hpp"
+#include "strata/kernels/iq_kernels.hpp"
+#include "strata/kernels/native_mmvq.hpp"
+#include "strata/kernels/native_moe.hpp"
+#include <set>
+#include <thread>
+
+#include <cuda_runtime.h>
+
+#include <algorithm>
+#include <cerrno>
+#include <chrono>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <map>
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
+
+#if !defined(_WIN32)
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#endif
+
+namespace {
+
+using namespace strata::core;
+namespace K = strata::kernels;
+using Clock = std::chrono::steady_clock;
+
+uint64_t us_since(Clock::time_point t0) {
+    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(Clock::now() - t0).count());
+}
+
+constexpr int kMaxTokens = 16;
+constexpr int kMaxTopK = 16;
+constexpr int kMaxCap = kMaxTokens * kMaxTopK;
+
+struct WorkerGroupMeta {
+    unsigned long long ptr[kMaxCap];
+    int32_t start[kMaxCap + 1];
+    int32_t dst[kMaxCap];
+    int32_t tok[kMaxCap];
+    int32_t count;
+    // Reduction table: for each token t in [0, n_tokens), up to kMaxTopK compact row indices and weights
+    int32_t red_cnt[kMaxTokens];
+    int32_t red_row[kMaxTokens * kMaxTopK];
+    float red_wt[kMaxTokens * kMaxTopK];
+};
+
+__global__ void k_reduce_weighted_parts(const float *__restrict__ parts, const WorkerGroupMeta *__restrict__ meta,
+                                        float *__restrict__ out_sum, int n_embd) {
+    const int t = blockIdx.y;
+    const int c = blockIdx.x * blockDim.x + threadIdx.x;
+    if (c >= n_embd)
+        return;
+    const int cnt = meta->red_cnt[t];
+    float acc = 0.0f;
+    if (cnt > 0) {
+        const int base = t * kMaxTopK;
+        const int r0 = meta->red_row[base];
+        acc = meta->red_wt[base] * parts[static_cast<size_t>(r0) * n_embd + c];
+        for (int j = 1; j < cnt; ++j) {
+            const int rj = meta->red_row[base + j];
+            acc = fmaf(meta->red_wt[base + j], parts[static_cast<size_t>(rj) * n_embd + c], acc);
+        }
+    }
+    out_sum[static_cast<size_t>(t) * n_embd + c] = acc;
+}
+
+struct WorkerLayerSource {
+    K::NativeExpertLayout layout{};
+    const uint8_t *src_g = nullptr;
+    const uint8_t *src_u = nullptr;
+    const uint8_t *src_d = nullptr;
+    size_t src_gsz = 0;
+    size_t src_dsz = 0;
+    size_t slot_stride = 0;
+};
+
+struct WorkerContext {
+    int device = 0;
+    std::string device_name;
+    std::shared_ptr<strata::GgufModel> gguf;
+    ModelGeometry geom{};
+    int64_t top_k = 8;
+    int32_t total_layers = 0; // g.n_layers + (g.n_mtp_layers > 0 ? 1 : 0)
+    uint64_t fingerprint = 0;
+    std::array<uint8_t, 32> model_sha256{};
+    cudaEvent_t timing[4]{};
+    std::vector<WorkerLayerSource> layers;
+
+    // Resident cache in GPU VRAM:
+    // slot_of[layer * n_expert + expert] -> slot index in d_arena (or -1 if not resident)
+    std::vector<int32_t> slot_of;
+    std::vector<size_t> slot_offset; // byte offset of slot s in d_arena
+    uint8_t *d_arena = nullptr;
+    size_t arena_bytes = 0;
+    uint32_t loaded_count = 0;
+
+    // Execution buffers on device
+    cudaStream_t stream = nullptr;
+    WorkerGroupMeta *h_meta = nullptr;
+    WorkerGroupMeta *d_meta = nullptr;
+    float *h_x = nullptr;
+    float *d_x = nullptr;
+    void *d_q8 = nullptr;
+    void *d_scratch = nullptr;
+    float *d_parts = nullptr;
+    float *d_sum = nullptr;
+    float *h_sum = nullptr;
+
+    ~WorkerContext() { close(); }
+
+    void close_cache() {
+        if (d_arena) {
+            cudaFree(d_arena);
+            d_arena = nullptr;
+        }
+        arena_bytes = 0;
+        loaded_count = 0;
+        std::fill(slot_of.begin(), slot_of.end(), -1);
+        slot_offset.clear();
+    }
+
+    void close() {
+        if (stream)
+            cudaStreamSynchronize(stream);
+        close_cache();
+        for (auto e : timing)
+            if (e)
+                cudaEventDestroy(e);
+        if (d_meta) {
+            cudaFree(d_meta);
+            d_meta = nullptr;
+        }
+        if (h_meta) {
+            cudaFreeHost(h_meta);
+            h_meta = nullptr;
+        }
+        if (d_x) {
+            cudaFree(d_x);
+            d_x = nullptr;
+        }
+        if (h_x) {
+            cudaFreeHost(h_x);
+            h_x = nullptr;
+        }
+        if (d_q8) {
+            cudaFree(d_q8);
+            d_q8 = nullptr;
+        }
+        if (d_scratch) {
+            cudaFree(d_scratch);
+            d_scratch = nullptr;
+        }
+        if (d_parts) {
+            cudaFree(d_parts);
+            d_parts = nullptr;
+        }
+        if (d_sum) {
+            cudaFree(d_sum);
+            d_sum = nullptr;
+        }
+        if (h_sum) {
+            cudaFreeHost(h_sum);
+            h_sum = nullptr;
+        }
+        if (stream) {
+            cudaStreamDestroy(stream);
+            stream = nullptr;
+        }
+    }
+};
+
+bool check_cuda(cudaError_t e, const char *what, std::string &err) {
+    if (e == cudaSuccess)
+        return true;
+    err = std::string(what) + ": " + cudaGetErrorString(e);
+    return false;
+}
+
+void pack_expert_blob(const WorkerLayerSource &L, int32_t e, uint8_t *dst) {
+    std::memcpy(dst, L.src_g + static_cast<size_t>(e) * L.src_gsz, L.src_gsz);
+    std::memcpy(dst + L.layout.up_off, L.src_u + static_cast<size_t>(e) * L.src_gsz, L.src_gsz);
+    std::memcpy(dst + L.layout.down_off, L.src_d + static_cast<size_t>(e) * L.src_dsz, L.src_dsz);
+}
+
+bool init_worker_model(const std::string &model_path, int device, WorkerContext &ctx, std::string &err) {
+    int count = 0;
+    if (!check_cuda(cudaGetDeviceCount(&count), "cudaGetDeviceCount", err))
+        return false;
+    if (device < 0 || device >= count) {
+        err = "requested GPU device " + std::to_string(device) + " not available (count=" + std::to_string(count) + ")";
+        return false;
+    }
+    if (!check_cuda(cudaSetDevice(device), "cudaSetDevice", err))
+        return false;
+    ctx.device = device;
+
+    cudaDeviceProp prop{};
+    if (!check_cuda(cudaGetDeviceProperties(&prop, device), "cudaGetDeviceProperties", err))
+        return false;
+    ctx.device_name = prop.name;
+
+    try {
+        ctx.gguf = std::make_shared<strata::GgufModel>(strata::GgufModel::open(model_path));
+    } catch (const std::exception &ex) {
+        err = std::string("failed to open GGUF model: ") + ex.what();
+        return false;
+    }
+    const strata::GgufModel &gm = *ctx.gguf;
+    if (!geometry_from_gguf(gm.meta(), ctx.geom, ctx.top_k, err))
+        return false;
+    const auto &g = ctx.geom;
+    const auto *arch = gm.meta().get("general.architecture");
+    if (!arch || arch->s != "qwen35moe" || ctx.top_k < 1 || ctx.top_k > kMaxTopK) {
+        err = "network worker v1 requires qwen35moe with top-k in 1..16";
+        return false;
+    }
+    ctx.total_layers = static_cast<int32_t>(g.n_layers);
+    ctx.model_sha256 = expert_worker_model_sha256(gm);
+    ctx.fingerprint = compute_model_fingerprint(static_cast<uint32_t>(g.n_layers), static_cast<uint32_t>(g.n_expert),
+                                                static_cast<uint32_t>(g.n_embd), static_cast<uint32_t>(g.n_ff));
+
+    ctx.layers.resize(static_cast<size_t>(ctx.total_layers));
+    for (int32_t l = 0; l < ctx.total_layers; ++l) {
+        auto tname = [&](const char *s) { return "blk." + std::to_string(l) + "." + s; };
+        size_t sg = 0, su = 0, sd = 0;
+        const strata::TensorInfo *tg = gm.find(tname("ffn_gate_exps.weight"), &sg);
+        const strata::TensorInfo *tu = gm.find(tname("ffn_up_exps.weight"), &su);
+        const strata::TensorInfo *td = gm.find(tname("ffn_down_exps.weight"), &sd);
+        if (!tg || !tu || !td) {
+            err = "missing routed expert tensors at layer " + std::to_string(l);
+            return false;
+        }
+        const std::vector<uint64_t> gu_shape{static_cast<uint64_t>(g.n_embd), static_cast<uint64_t>(g.n_ff),
+                                             static_cast<uint64_t>(g.n_expert)};
+        const std::vector<uint64_t> dn_shape{static_cast<uint64_t>(g.n_ff), static_cast<uint64_t>(g.n_embd),
+                                             static_cast<uint64_t>(g.n_expert)};
+        if (tg->shape != gu_shape || tu->shape != gu_shape || td->shape != dn_shape || !gm.in_bounds(*tg, sg) ||
+            !gm.in_bounds(*tu, su) || !gm.in_bounds(*td, sd)) {
+            err = "invalid expert tensor shape or bounds at layer " + std::to_string(l);
+            return false;
+        }
+        if (tg->type != tu->type) {
+            err = "ffn_gate_exps / ffn_up_exps type mismatch at layer " + std::to_string(l);
+            return false;
+        }
+        if (!K::native_expert_supported(static_cast<int>(tg->type), static_cast<int>(td->type), g.n_embd, g.n_ff)) {
+            err = "unsupported expert quantization types at layer " + std::to_string(l);
+            return false;
+        }
+        WorkerLayerSource &wl = ctx.layers[static_cast<size_t>(l)];
+        wl.layout = K::native_expert_layout(static_cast<int>(tg->type), static_cast<int>(td->type), g.n_embd, g.n_ff);
+        wl.src_gsz = static_cast<size_t>(g.n_ff) * wl.layout.gu_row;
+        wl.src_dsz = static_cast<size_t>(g.n_embd) * wl.layout.d_row;
+        wl.slot_stride = (wl.layout.bytes + 255u) & ~size_t(255u);
+        wl.src_g = gm.shard(sg).tensor_data(*tg);
+        wl.src_u = gm.shard(su).tensor_data(*tu);
+        wl.src_d = gm.shard(sd).tensor_data(*td);
+    }
+
+    for (auto &e : ctx.timing)
+        if (!check_cuda(cudaEventCreate(&e), "cudaEventCreate", err))
+            return false;
+    ctx.slot_of.assign(static_cast<size_t>(ctx.total_layers) * static_cast<size_t>(g.n_expert), -1);
+
+    const size_t N = static_cast<size_t>(g.n_embd);
+    const size_t FF = static_cast<size_t>(g.n_ff);
+    const size_t q8_bytes = K::native_q8_1_bytes(static_cast<int>(N), 1) * kMaxTokens;
+    const size_t scratch_bytes = K::native_expert_scratch_bytes(kMaxCap, static_cast<int64_t>(FF));
+
+    if (!check_cuda(cudaStreamCreateWithFlags(&ctx.stream, cudaStreamNonBlocking), "cudaStreamCreate", err) ||
+        !check_cuda(
+            cudaHostAlloc(reinterpret_cast<void **>(&ctx.h_meta), sizeof(WorkerGroupMeta), cudaHostAllocDefault),
+            "cudaHostAlloc(h_meta)", err) ||
+        !check_cuda(cudaMalloc(reinterpret_cast<void **>(&ctx.d_meta), sizeof(WorkerGroupMeta)), "cudaMalloc(d_meta)",
+                    err) ||
+        !check_cuda(
+            cudaHostAlloc(reinterpret_cast<void **>(&ctx.h_x), kMaxTokens * N * sizeof(float), cudaHostAllocDefault),
+            "cudaHostAlloc(h_x)", err) ||
+        !check_cuda(cudaMalloc(reinterpret_cast<void **>(&ctx.d_x), kMaxTokens * N * sizeof(float)), "cudaMalloc(d_x)",
+                    err) ||
+        !check_cuda(cudaMalloc(&ctx.d_q8, q8_bytes), "cudaMalloc(d_q8)", err) ||
+        !check_cuda(cudaMalloc(&ctx.d_scratch, scratch_bytes), "cudaMalloc(d_scratch)", err) ||
+        !check_cuda(cudaMalloc(reinterpret_cast<void **>(&ctx.d_parts), kMaxCap * N * sizeof(float)),
+                    "cudaMalloc(d_parts)", err) ||
+        !check_cuda(cudaMalloc(reinterpret_cast<void **>(&ctx.d_sum), kMaxTokens * N * sizeof(float)),
+                    "cudaMalloc(d_sum)", err) ||
+        !check_cuda(
+            cudaHostAlloc(reinterpret_cast<void **>(&ctx.h_sum), kMaxTokens * N * sizeof(float), cudaHostAllocDefault),
+            "cudaHostAlloc(h_sum)", err)) {
+        ctx.close();
+        return false;
+    }
+
+    return true;
+}
+
+bool install_worker_plan(WorkerContext &ctx, const ExpertWorkerPair *pairs, uint32_t n_pairs,
+                         ExpertWorkerReadyPayload &out_ready, std::string &err) {
+    const auto t0 = Clock::now();
+    ctx.close_cache();
+    out_ready = {};
+
+    const int32_t n_exp = static_cast<int32_t>(ctx.geom.n_expert);
+    std::vector<ExpertWorkerPair> unique_pairs;
+    unique_pairs.reserve(n_pairs);
+
+    size_t needed_bytes = 0;
+    for (uint32_t i = 0; i < n_pairs; ++i) {
+        const int32_t l = pairs[i].layer;
+        const int32_t e = pairs[i].expert;
+        if (l < 0 || l >= ctx.total_layers || e < 0 || e >= n_exp) {
+            err = "pair (" + std::to_string(l) + "," + std::to_string(e) + ") out of bounds";
+            out_ready.status = static_cast<uint32_t>(ExpertWorkerErrorCode::PLAN_LOAD_FAILED);
+            return false;
+        }
+        const size_t idx = static_cast<size_t>(l) * static_cast<size_t>(n_exp) + static_cast<size_t>(e);
+        if (ctx.slot_of[idx] >= 0)
+            continue; // duplicate in list
+        ctx.slot_of[idx] = static_cast<int32_t>(unique_pairs.size());
+        ctx.slot_offset.push_back(needed_bytes);
+        needed_bytes += ctx.layers[static_cast<size_t>(l)].slot_stride;
+        unique_pairs.push_back({l, e});
+    }
+
+    size_t free_b = 0, total_b = 0;
+    if (!check_cuda(cudaMemGetInfo(&free_b, &total_b), "cudaMemGetInfo", err)) {
+        ctx.close_cache();
+        out_ready.status = static_cast<uint32_t>(ExpertWorkerErrorCode::PLAN_LOAD_FAILED);
+        return false;
+    }
+
+    if (unique_pairs.empty()) {
+        out_ready.status = static_cast<uint32_t>(ExpertWorkerErrorCode::OK);
+        out_ready.loaded_count = 0;
+        out_ready.vram_used_bytes = 0;
+        out_ready.vram_free_bytes = free_b;
+        out_ready.load_time_us = us_since(t0);
+        return true;
+    }
+
+    const size_t reserve = 256ULL << 20; // keep at least 256 MiB free
+    if (needed_bytes + reserve > free_b) {
+        err = "plan requires " + std::to_string(needed_bytes >> 20) + " MiB, but only " + std::to_string(free_b >> 20) +
+              " MiB free on GPU";
+        ctx.close_cache();
+        out_ready.status = static_cast<uint32_t>(ExpertWorkerErrorCode::PLAN_LOAD_FAILED);
+        return false;
+    }
+
+    if (!check_cuda(cudaMalloc(reinterpret_cast<void **>(&ctx.d_arena), needed_bytes), "cudaMalloc(d_arena)", err)) {
+        ctx.close_cache();
+        out_ready.status = static_cast<uint32_t>(ExpertWorkerErrorCode::PLAN_LOAD_FAILED);
+        return false;
+    }
+    ctx.arena_bytes = needed_bytes;
+
+    std::vector<uint8_t> host_blob;
+    for (size_t s = 0; s < unique_pairs.size(); ++s) {
+        const int32_t l = unique_pairs[s].layer;
+        const int32_t e = unique_pairs[s].expert;
+        const WorkerLayerSource &wl = ctx.layers[static_cast<size_t>(l)];
+        if (host_blob.size() < wl.layout.bytes)
+            host_blob.resize(wl.layout.bytes);
+        pack_expert_blob(wl, e, host_blob.data());
+        if (!check_cuda(
+                cudaMemcpy(ctx.d_arena + ctx.slot_offset[s], host_blob.data(), wl.layout.bytes, cudaMemcpyHostToDevice),
+                "cudaMemcpy(expert_blob)", err)) {
+            ctx.close_cache();
+            out_ready.status = static_cast<uint32_t>(ExpertWorkerErrorCode::PLAN_LOAD_FAILED);
+            return false;
+        }
+    }
+
+    // Verify every acknowledged slot byte-for-byte from VRAM.
+    for (size_t s = 0; s < unique_pairs.size(); ++s) {
+        const int32_t l = unique_pairs[s].layer;
+        const int32_t e = unique_pairs[s].expert;
+        const WorkerLayerSource &wl = ctx.layers[static_cast<size_t>(l)];
+        std::vector<uint8_t> expected(wl.layout.bytes), actual(wl.layout.bytes);
+        pack_expert_blob(wl, e, expected.data());
+        if (!check_cuda(
+                cudaMemcpy(actual.data(), ctx.d_arena + ctx.slot_offset[s], wl.layout.bytes, cudaMemcpyDeviceToHost),
+                "cudaMemcpy(verify_slot)", err) ||
+            std::memcmp(expected.data(), actual.data(), wl.layout.bytes) != 0) {
+            err = "VRAM verification failed for slot " + std::to_string(s);
+            ctx.close_cache();
+            out_ready.status = static_cast<uint32_t>(ExpertWorkerErrorCode::PLAN_LOAD_FAILED);
+            return false;
+        }
+    }
+
+    ctx.loaded_count = static_cast<uint32_t>(unique_pairs.size());
+    if (!check_cuda(cudaMemGetInfo(&free_b, &total_b), "cudaMemGetInfo", err)) {
+        ctx.close_cache();
+        out_ready.status = static_cast<uint32_t>(ExpertWorkerErrorCode::PLAN_LOAD_FAILED);
+        return false;
+    }
+    out_ready.status = static_cast<uint32_t>(ExpertWorkerErrorCode::OK);
+    out_ready.loaded_count = ctx.loaded_count;
+    out_ready.vram_used_bytes = ctx.arena_bytes;
+    out_ready.vram_free_bytes = free_b;
+    out_ready.load_time_us = us_since(t0);
+    return true;
+}
+
+bool execute_worker_request(WorkerContext &ctx, const ExpertWorkerExecuteFixed &ef,
+                            const ExpertWorkerAssignment *assigns, const float *acts, ExpertWorkerResultFixed &rf,
+                            uint8_t *out_mask, float *out_sums, std::string &err) {
+    const auto t0 = Clock::now();
+    const int32_t N = static_cast<int32_t>(ctx.geom.n_embd);
+    const int32_t n_exp = static_cast<int32_t>(ctx.geom.n_expert);
+
+    rf = {};
+    rf.layer = ef.layer;
+    rf.n_tokens = ef.n_tokens;
+    rf.n_embd = ef.n_embd;
+    rf.n_assignments_executed = 0;
+    rf.status = static_cast<uint32_t>(ExpertWorkerErrorCode::OK);
+
+    std::memset(out_mask, 0, ef.n_tokens);
+    std::memset(out_sums, 0, static_cast<size_t>(ef.n_tokens) * N * sizeof(float));
+
+    if (ef.layer < 0 || ef.layer >= ctx.total_layers || ef.n_embd != static_cast<uint32_t>(N) || ef.n_tokens == 0 ||
+        ef.n_tokens > static_cast<uint32_t>(kMaxTokens) || ef.n_assignments > static_cast<uint32_t>(kMaxCap)) {
+        rf.status = static_cast<uint32_t>(ExpertWorkerErrorCode::MALFORMED_PACKET);
+        rf.total_us = us_since(t0);
+        return true;
+    }
+
+    if (ef.n_assignments == 0) {
+        rf.total_us = us_since(t0);
+        return true;
+    }
+
+    // Validate residency and group assignments by expert_id (ascending order or arrival order)
+    struct Entry {
+        uint16_t tok;
+        uint16_t slot_k;
+        int32_t expert;
+        int32_t cache_slot;
+        float weight;
+        int32_t compact_row;
+    };
+    std::set<std::pair<uint16_t, uint16_t>> seen_slots;
+    std::vector<Entry> entries(ef.n_assignments);
+    std::vector<int32_t> group_experts;
+    std::vector<int32_t> group_cache_slots;
+    group_experts.reserve(ef.n_assignments);
+    group_cache_slots.reserve(ef.n_assignments);
+
+    for (uint32_t i = 0; i < ef.n_assignments; ++i) {
+        const auto &a = assigns[i];
+        if (a.token_idx >= ef.n_tokens || a.expert_id < 0 || a.expert_id >= n_exp || a.slot_idx >= ctx.top_k ||
+            !std::isfinite(a.weight) || !seen_slots.emplace(a.token_idx, a.slot_idx).second) {
+            rf.status = static_cast<uint32_t>(ExpertWorkerErrorCode::MALFORMED_PACKET);
+            rf.total_us = us_since(t0);
+            return true;
+        }
+        const int32_t cslot =
+            ctx.slot_of[static_cast<size_t>(ef.layer) * static_cast<size_t>(n_exp) + static_cast<size_t>(a.expert_id)];
+        if (cslot < 0) {
+            rf.status = static_cast<uint32_t>(ExpertWorkerErrorCode::NONRESIDENT_EXPERT);
+            rf.total_us = us_since(t0);
+            return true;
+        }
+        entries[i] = {a.token_idx, a.slot_idx, a.expert_id, cslot, a.weight, -1};
+        bool found = false;
+        for (int32_t ge : group_experts) {
+            if (ge == a.expert_id) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            group_experts.push_back(a.expert_id);
+            group_cache_slots.push_back(cslot);
+        }
+    }
+
+    WorkerGroupMeta *gm = ctx.h_meta;
+    const int32_t n_groups = static_cast<int32_t>(group_experts.size());
+    gm->count = n_groups;
+    for (uint32_t t = 0; t < ef.n_tokens; ++t)
+        gm->red_cnt[t] = 0;
+
+    int32_t compact = 0;
+    for (int32_t g = 0; g < n_groups; ++g) {
+        const int32_t ge = group_experts[static_cast<size_t>(g)];
+        const int32_t cslot = group_cache_slots[static_cast<size_t>(g)];
+        gm->ptr[g] = reinterpret_cast<unsigned long long>(ctx.d_arena + ctx.slot_offset[static_cast<size_t>(cslot)]);
+        gm->start[g] = compact;
+        for (uint32_t i = 0; i < ef.n_assignments; ++i) {
+            if (entries[i].expert == ge) {
+                entries[i].compact_row = compact;
+                gm->dst[compact] = compact;
+                gm->tok[compact] = entries[i].tok;
+                ++compact;
+            }
+        }
+    }
+    gm->start[n_groups] = compact;
+
+    // Populate per-token reduction table in original assignment order (preserves router pick order!)
+    for (uint32_t i = 0; i < ef.n_assignments; ++i) {
+        const uint16_t t = entries[i].tok;
+        const int32_t c = gm->red_cnt[t];
+        if (c >= kMaxTopK) {
+            rf.status = static_cast<uint32_t>(ExpertWorkerErrorCode::MALFORMED_PACKET);
+            rf.total_us = us_since(t0);
+            return true;
+        }
+        gm->red_row[t * kMaxTopK + c] = entries[i].compact_row;
+        gm->red_wt[t * kMaxTopK + c] = entries[i].weight;
+        gm->red_cnt[t] = c + 1;
+        out_mask[t] = 1;
+    }
+
+    const size_t act_bytes = static_cast<size_t>(ef.n_tokens) * N * sizeof(float);
+    std::memcpy(ctx.h_x, acts, act_bytes);
+
+    if (!check_cuda(cudaEventRecord(ctx.timing[0], ctx.stream), "stage timing", err))
+        return false;
+    if (!check_cuda(cudaMemcpyAsync(ctx.d_x, ctx.h_x, act_bytes, cudaMemcpyHostToDevice, ctx.stream), "copy d_x",
+                    err) ||
+        !check_cuda(
+            cudaMemcpyAsync(ctx.d_meta, ctx.h_meta, sizeof(WorkerGroupMeta), cudaMemcpyHostToDevice, ctx.stream),
+            "copy d_meta", err)) {
+        rf.status = static_cast<uint32_t>(ExpertWorkerErrorCode::KERNEL_FAILURE);
+        return false;
+    }
+    if (!check_cuda(cudaEventRecord(ctx.timing[1], ctx.stream), "kernel timing", err))
+        return false;
+    const WorkerLayerSource &wl = ctx.layers[static_cast<size_t>(ef.layer)];
+    K::quantize_q8_1_rows(ctx.d_x, ef.n_tokens, N, ctx.d_q8, ctx.stream);
+    K::native_expert_grouped(wl.layout, ctx.d_meta->ptr, ctx.d_meta->start, &ctx.d_meta->count, ctx.d_meta->dst,
+                             ctx.d_meta->tok, n_groups, compact, ctx.d_q8, ctx.d_scratch, ctx.d_parts, ctx.stream);
+
+    k_reduce_weighted_parts<<<dim3((N + 255) / 256, ef.n_tokens), 256, 0, ctx.stream>>>(ctx.d_parts, ctx.d_meta,
+                                                                                        ctx.d_sum, N);
+
+    if (!check_cuda(cudaGetLastError(), "worker kernel launch", err)) {
+        rf.status = static_cast<uint32_t>(ExpertWorkerErrorCode::KERNEL_FAILURE);
+        return false;
+    }
+    if (!check_cuda(cudaEventRecord(ctx.timing[2], ctx.stream), "copy timing", err))
+        return false;
+    if (!check_cuda(cudaMemcpyAsync(ctx.h_sum, ctx.d_sum, act_bytes, cudaMemcpyDeviceToHost, ctx.stream), "copy h_sum",
+                    err)) {
+        rf.status = static_cast<uint32_t>(ExpertWorkerErrorCode::KERNEL_FAILURE);
+        return false;
+    }
+    if (!check_cuda(cudaEventRecord(ctx.timing[3], ctx.stream), "completion timing", err))
+        return false;
+    // A failed GPU must not keep this service alive indefinitely. The primary has
+    // its own shorter network deadline and recomputes its missing rows locally.
+    cudaError_t se;
+    while ((se = cudaStreamQuery(ctx.stream)) == cudaErrorNotReady) {
+        if (us_since(t0) > 30000000) {
+            std::fprintf(stderr, "strata-expert-worker: GPU request exceeded 30 s; terminating worker\n");
+            std::_Exit(1);
+        }
+        std::this_thread::yield();
+    }
+    if (!check_cuda(se, "cudaStreamQuery", err)) {
+        rf.status = static_cast<uint32_t>(ExpertWorkerErrorCode::KERNEL_FAILURE);
+        return false;
+    }
+    std::memcpy(out_sums, ctx.h_sum, act_bytes);
+    float elapsed = 0;
+    if (!check_cuda(cudaEventElapsedTime(&elapsed, ctx.timing[0], ctx.timing[1]), "stage elapsed", err))
+        return false;
+    rf.stage_us = static_cast<uint64_t>(elapsed * 1000);
+    if (!check_cuda(cudaEventElapsedTime(&elapsed, ctx.timing[1], ctx.timing[2]), "kernel elapsed", err))
+        return false;
+    rf.kernel_us = static_cast<uint64_t>(elapsed * 1000);
+    if (!check_cuda(cudaEventElapsedTime(&elapsed, ctx.timing[2], ctx.timing[3]), "copy elapsed", err))
+        return false;
+    rf.copy_out_us = static_cast<uint64_t>(elapsed * 1000);
+    rf.n_assignments_executed = ef.n_assignments;
+    rf.total_us = us_since(t0);
+    return true;
+}
+
+bool serve_session(int cfd, WorkerContext &ctx, int timeout_ms, bool verbose) {
+    std::string err;
+    if (!expert_worker_set_socket_opts(cfd, timeout_ms, &err)) {
+        std::fprintf(stderr, "strata-expert-worker: %s\n", err.c_str());
+        return false;
+    }
+    ctx.close_cache(); // Each connection must install and acknowledge its own immutable plan.
+    bool hello_ok = false, installed = false;
+    uint64_t last_id = 0;
+    ExpertWorkerFrameHeader hdr{};
+    std::vector<uint8_t> payload;
+    auto reject = [&](const char *why) {
+        expert_worker_send_error(cfd, hdr.request_id, ExpertWorkerErrorCode::MALFORMED_PACKET, why);
+        std::fprintf(stderr, "strata-expert-worker: rejected request: %s\n", why);
+        return false;
+    };
+    while (expert_worker_recv_frame(cfd, hdr, payload, &err, timeout_ms)) {
+        if (hdr.request_id <= last_id)
+            return reject("request IDs must increase");
+        last_id = hdr.request_id;
+        const auto type = static_cast<ExpertWorkerMsgType>(hdr.msg_type);
+        if (type == ExpertWorkerMsgType::PING) {
+            if (!payload.empty())
+                return reject("PING must be empty");
+            if (!expert_worker_send_frame(cfd, ExpertWorkerMsgType::PONG, hdr.request_id, nullptr, 0, &err, timeout_ms))
+                return false;
+            continue;
+        }
+        if (type == ExpertWorkerMsgType::HELLO) {
+            ExpertWorkerHelloPayload hp{};
+            if (hello_ok || !expert_wire_decode(payload, hp))
+                return reject("invalid or repeated HELLO");
+            ExpertWorkerCapsPayload cp{};
+            cp.model_fingerprint = ctx.fingerprint;
+            cp.model_sha256 = ctx.model_sha256;
+            cp.n_embd = ctx.geom.n_embd;
+            cp.n_ff = ctx.geom.n_ff;
+            cp.n_layers = ctx.geom.n_layers;
+            cp.n_experts = ctx.geom.n_expert;
+            cp.top_k = ctx.top_k;
+            cp.endianness = 0x01020304u;
+#if defined(STRATA_USE_HIP)
+            cp.backend_id = 2;
+#else
+            cp.backend_id = 1;
+#endif
+            cp.max_tokens = kMaxTokens;
+            cp.max_slots = ctx.total_layers * ctx.geom.n_expert;
+            size_t free_b = 0, total_b = 0;
+            if (!check_cuda(cudaMemGetInfo(&free_b, &total_b), "cudaMemGetInfo", err))
+                return reject(err.c_str());
+            cp.vram_free_bytes = free_b;
+            cp.vram_total_bytes = total_b;
+            std::snprintf(cp.device_name, sizeof(cp.device_name), "%s", ctx.device_name.c_str());
+            hello_ok = hp.model_sha256 == cp.model_sha256 && hp.model_fingerprint == cp.model_fingerprint &&
+                       hp.n_embd == cp.n_embd && hp.n_ff == cp.n_ff && hp.n_layers == cp.n_layers &&
+                       hp.n_experts == cp.n_experts && hp.top_k == cp.top_k && hp.dtype == 0 && hp.reserved == 0 &&
+                       hp.endianness == cp.endianness;
+            cp.status =
+                static_cast<uint32_t>(hello_ok ? ExpertWorkerErrorCode::OK : ExpertWorkerErrorCode::MODEL_MISMATCH);
+            if (!expert_worker_send_message(cfd, ExpertWorkerMsgType::CAPS, hdr.request_id, cp, &err, timeout_ms))
+                return false;
+            if (!hello_ok) {
+                std::fprintf(stderr, "strata-expert-worker: model SHA-256 or geometry mismatch\n");
+                return false;
+            }
+            continue;
+        }
+        if (!hello_ok)
+            return reject("HELLO required");
+        if (type == ExpertWorkerMsgType::INSTALL_PLAN) {
+            if (installed)
+                return reject("placement is immutable for a session");
+            ExpertWireReader r{payload};
+            uint32_t n = 0;
+            r.get(n);
+            if (!r.ok || n > ctx.slot_of.size() || payload.size() != 4 + static_cast<size_t>(n) * 8)
+                return reject("invalid INSTALL_PLAN length");
+            std::vector<ExpertWorkerPair> pairs(n);
+            std::set<std::pair<int32_t, int32_t>> unique;
+            for (auto &p : pairs) {
+                r.get(p);
+                if (!unique.emplace(p.layer, p.expert).second)
+                    return reject("duplicate plan entry");
+            }
+            ExpertWorkerReadyPayload ready{};
+            installed = install_worker_plan(ctx, pairs.data(), n, ready, err);
+            if (!installed) {
+                ctx.close_cache();
+                std::fprintf(stderr, "strata-expert-worker: plan failed: %s\n", err.c_str());
+            }
+            if (!expert_worker_send_message(cfd, ExpertWorkerMsgType::READY, hdr.request_id, ready, &err, timeout_ms))
+                return false;
+            if (!installed)
+                return false;
+            std::fprintf(
+                stderr,
+                "strata-expert-worker: READY loaded %u experts (%llu bytes VRAM), verified every slot, %llu us\n",
+                ready.loaded_count, (unsigned long long)ready.vram_used_bytes, (unsigned long long)ready.load_time_us);
+            continue;
+        }
+        if (type != ExpertWorkerMsgType::EXECUTE || !installed)
+            return reject("EXECUTE requires READY");
+        ExpertWireReader r{payload};
+        ExpertWorkerExecuteFixed ef{};
+        r.get(ef);
+        if (!r.ok || ef.layer < 0 || ef.layer >= ctx.total_layers || ef.n_tokens == 0 || ef.n_tokens > kMaxTokens ||
+            ef.n_embd != ctx.geom.n_embd || ef.n_UniqueTokens_or_FullRows != ef.n_tokens || ef.flags ||
+            ef.n_assignments > ef.n_tokens * ctx.top_k)
+            return reject("invalid EXECUTE geometry");
+        const size_t count = static_cast<size_t>(ef.n_tokens) * ef.n_embd;
+        if (payload.size() != 24 + static_cast<size_t>(ef.n_assignments) * 12 + count * 4)
+            return reject("invalid EXECUTE length");
+        std::vector<ExpertWorkerAssignment> assigns(ef.n_assignments);
+        std::vector<float> acts(count), sums(count);
+        std::vector<uint8_t> mask(ef.n_tokens);
+        for (auto &a : assigns)
+            r.get(a);
+        for (auto &v : acts) {
+            r.get(v);
+            if (!std::isfinite(v))
+                return reject("nonfinite activation");
+        }
+        ExpertWorkerResultFixed rf{};
+        if (!execute_worker_request(ctx, ef, assigns.data(), acts.data(), rf, mask.data(), sums.data(), err)) {
+            std::fprintf(stderr, "strata-expert-worker: GPU execution failed: %s\n", err.c_str());
+            expert_worker_send_error(cfd, hdr.request_id, ExpertWorkerErrorCode::KERNEL_FAILURE, err);
+            std::_Exit(1); // Do not reuse a possibly poisoned GPU context.
+        }
+        ExpertWireWriter w;
+        w.put(rf);
+        for (auto v : mask)
+            w.put(v);
+        for (auto v : sums)
+            w.put(v);
+        if (!expert_worker_send_frame(cfd, ExpertWorkerMsgType::RESULT, hdr.request_id, w.bytes.data(),
+                                      static_cast<uint32_t>(w.bytes.size()), &err, timeout_ms))
+            return false;
+    }
+    if (verbose)
+        std::fprintf(stderr, "strata-expert-worker: session closed: %s\n", err.c_str());
+    return true;
+}
+
+} // namespace
+
+int main(int argc, char **argv) {
+    std::string model_path;
+    std::string bind_ep = "127.0.0.1:19450";
+    int device = 0;
+    int timeout_ms = 30000;
+    int max_sessions = 0; // 0 = run indefinitely accepting sequential sessions
+    bool verbose = false;
+
+    for (int i = 1; i < argc; ++i) {
+        const std::string a = argv[i];
+        auto next = [&]() -> std::string {
+            if (i + 1 >= argc) {
+                std::fprintf(stderr, "strata-expert-worker: missing value for %s\n", a.c_str());
+                std::exit(2);
+            }
+            return argv[++i];
+        };
+        if (a == "--model")
+            model_path = next();
+        else if (a == "--bind")
+            bind_ep = next();
+        else if (a == "--device")
+            device = std::atoi(next().c_str());
+        else if (a == "--timeout-ms")
+            timeout_ms = std::atoi(next().c_str());
+        else if (a == "--max-sessions")
+            max_sessions = std::atoi(next().c_str());
+        else if (a == "--verbose")
+            verbose = true;
+        else {
+            std::fprintf(
+                stderr,
+                "usage: strata-expert-worker --model GGUF [--bind IP:PORT]\n"
+                "                            [--device 0] [--timeout-ms 30000] [--max-sessions N] [--verbose]\n");
+            return 2;
+        }
+    }
+
+    if (timeout_ms <= 0 || timeout_ms > 600000 || max_sessions < 0) {
+        std::fprintf(stderr, "strata-expert-worker: invalid timeout or session limit\n");
+        return 2;
+    }
+    if (model_path.empty()) {
+        std::fprintf(stderr, "strata-expert-worker: --model <path.gguf> is required\n");
+        return 2;
+    }
+
+    std::string bind_ip;
+    uint16_t bind_port = 0;
+    if (!expert_worker_parse_host_port(bind_ep, bind_ip, bind_port)) {
+        std::fprintf(stderr, "strata-expert-worker: invalid --bind %s (expected <ip>:<port>)\n", bind_ep.c_str());
+        return 2;
+    }
+    if (bind_ip == "0.0.0.0" && std::getenv("STRATA_WORKER_ALLOW_ANY") == nullptr) {
+        std::fprintf(stderr,
+                     "strata-expert-worker: refusing to bind 0.0.0.0 by default; specify private interface IP\n");
+        return 2;
+    }
+
+    WorkerContext ctx;
+    std::string err;
+    try {
+        if (!init_worker_model(model_path, device, ctx, err)) {
+            std::fprintf(stderr, "strata-expert-worker: init failed: %s\n", err.c_str());
+            return 1;
+        }
+    } catch (const std::exception &ex) {
+        std::fprintf(stderr, "strata-expert-worker: init failed: %s\n", ex.what());
+        return 1;
+    }
+
+    size_t free_b = 0, total_b = 0;
+    if (!check_cuda(cudaMemGetInfo(&free_b, &total_b), "cudaMemGetInfo", err)) {
+        std::fprintf(stderr, "strata-expert-worker: %s\n", err.c_str());
+        return 1;
+    }
+    std::fprintf(stderr,
+                 "strata-expert-worker: device %d (%s), %.2f / %.2f GiB VRAM free, model %s (%lld layers, %lld "
+                 "experts, N=%lld, FF=%lld)\n",
+                 device, ctx.device_name.c_str(), static_cast<double>(free_b) / (1ULL << 30),
+                 static_cast<double>(total_b) / (1ULL << 30), model_path.c_str(),
+                 static_cast<long long>(ctx.geom.n_layers), static_cast<long long>(ctx.geom.n_expert),
+                 static_cast<long long>(ctx.geom.n_embd), static_cast<long long>(ctx.geom.n_ff));
+
+    uint16_t actual_port = 0;
+    int lfd = expert_worker_listen(bind_ip, bind_port, 4, &actual_port, &err);
+    if (lfd < 0) {
+        std::fprintf(stderr, "strata-expert-worker: listen(%s:%u) failed: %s\n", bind_ip.c_str(), bind_port,
+                     err.c_str());
+        return 1;
+    }
+
+    std::printf("WORKER_LISTENING %s:%u\n", bind_ip.c_str(), actual_port);
+    std::fflush(stdout);
+
+    int sessions = 0;
+    while (max_sessions <= 0 || sessions < max_sessions) {
+        struct sockaddr_in caddr{};
+        socklen_t clen = sizeof(caddr);
+        int cfd = ::accept(lfd, reinterpret_cast<struct sockaddr *>(&caddr), &clen);
+        if (cfd < 0) {
+            if (errno == EINTR)
+                continue;
+            std::fprintf(stderr, "strata-expert-worker: accept failed: %s\n", std::strerror(errno));
+            expert_worker_close(lfd);
+            return 1;
+        }
+        ++sessions;
+        serve_session(cfd, ctx, timeout_ms, verbose);
+        expert_worker_close(cfd);
+    }
+
+    expert_worker_close(lfd);
+    return 0;
+}
