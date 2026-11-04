@@ -18,6 +18,10 @@
 // [--force IDS] [--dump-full-logits F] (tools/qwen35/kl.py's reference interface), --bench-pp N / --bench-tg N.
 #include "strata/artifact/gguf_reader.hpp"
 #include "strata/core/family_layout.hpp"
+#if defined(STRATA_NETWORK_EXPERTS)
+#include "strata/core/network_experts.hpp"
+#include "strata/core/expert_worker_identity.hpp"
+#endif
 #include "strata/kernels/fused_gdn.hpp"
 #include "strata/kernels/iq_kernels.hpp"
 #include "strata/kernels/native_mmvq.hpp"
@@ -1267,6 +1271,16 @@ struct Engine {
     int stream_pos = 0;
     long long hy_cpu = 0, hy_gpu = 0, hy_swaps = 0;   // entries computed on the CPU / GPU, slot replacements
     double hy_cpu_ms = 0;
+#if defined(STRATA_NETWORK_EXPERTS)
+    std::unique_ptr<strata::core::NetworkExpertExecutor> net_worker;
+    float *h_ewts = nullptr, *d_rsum = nullptr;
+    std::vector<float> net_sums;
+    uint8_t net_mask = 0;
+    bool net_decode = false, net_warned = false;
+    long long hy_remote = 0;
+    double hy_remote_wait_ms = 0;
+    std::vector<strata::core::ExpertWorkerAssignment> remote_assigns;
+#endif
     // decode / verify rows: their routing is counted once the rows are kept (commit), so a verify window's rejected
     // drafts never move the slots; the slots follow the counts at every kRebalanceEvery-th position exactly (a
     // window never steps over one), so plain and speculative decoding see the same slot tables at every position
@@ -2227,6 +2241,10 @@ struct Engine {
         const int N = (int) g.n_embd, Kp = (int) m->top_k;
         const int64_t n_ent = (int64_t) T * Kp;
         CK(cudaMemcpyAsync(h_ids, ids, (size_t) n_ent * 4, cudaMemcpyDeviceToHost, st));
+#if defined(STRATA_NETWORK_EXPERTS)
+        if (net_decode && net_worker && net_worker->healthy())
+            CK(cudaMemcpyAsync(h_ewts, ewts, (size_t) n_ent * 4, cudaMemcpyDeviceToHost, st));
+#endif
         CK(cudaMemcpyAsync(h_h, h, (size_t) T * N * 4, cudaMemcpyDeviceToHost, st));
         CK(cudaEventRecord(ev_route, st));
         group_entries(L, hy[li].slot_of_d, T);
@@ -2237,6 +2255,9 @@ struct Engine {
     /// The CPU half: the entries without a slot on the pool (ggml-cpu's arithmetic for the layer's formats), their
     /// rows uploaded and merged into the entries' rows.
     void moe_hybrid_cpu(size_t li, int T) {
+#if defined(STRATA_NETWORK_EXPERTS)
+        if (net_decode && net_worker && net_worker->healthy()) { moe_network_cpu(li, T); return; }
+#endif
 #if defined(STRATA_Q36_CPU_POOL)
         namespace C = strata::kernels::cpu;
         const auto& g = m->g;
@@ -2294,6 +2315,143 @@ struct Engine {
 #endif
     }
 
+#if defined(STRATA_NETWORK_EXPERTS)
+    /// The CPU + remote worker half: non-VRAM-resident entries are partitioned into remote-owned (dispatched to
+    /// NetworkExpertExecutor asynchronously before the local CPU pool runs) and local CPU pool misses; if the remote
+    /// worker disconnects or times out, affected remote assignments fall back cleanly to the local CPU pool.
+    void moe_network_cpu(size_t li, int T) {
+#if defined(STRATA_Q36_CPU_POOL)
+        namespace C = strata::kernels::cpu;
+        const auto& g = m->g;
+        const int N = (int) g.n_embd, Kp = (int) m->top_k;
+        const int n_ent = T * Kp;
+        Hy& H = hy[li];
+        const Layer& L = layer_at((int) li);
+        while (cudaEventQuery(ev_route) == cudaErrorNotReady) {
+        }
+        // the missed entries per expert (up to MAXT tokens per job)
+        jobs.clear();
+        remote_assigns.clear();
+        std::vector<char> quantized((size_t) T, 0);
+        int n_miss = 0, n_cpu = 0;
+        std::map<int, size_t> open;   // expert -> its job with room
+        const bool defer = rows_deferred && li < m->layers.size();
+        if (defer) {
+            if (row_ids.size() < m->layers.size()) row_ids.resize(m->layers.size());
+            row_ids[li].assign(h_ids, h_ids + n_ent);
+        }
+        const bool use_net = net_worker->healthy();
+        auto add_cpu_job = [&](int e, int x) {
+            const int t = e / Kp;
+            if (!quantized[(size_t) t]) {
+                C::native_quant_act(H.fmt, h_h + (size_t) t * N, acts + (size_t) t * C::kNativeActBytes);
+                quantized[(size_t) t] = 1;
+            }
+            auto it = open.find(x);
+            if (it == open.end() || jobs[it->second].nt == C::MAXT) {
+                C::ExpertJobMulti j;
+                j.blob = L.hblobs + (size_t) x * L.stride;
+                jobs.push_back(j);
+                it = open.insert_or_assign(x, jobs.size() - 1).first;
+            }
+            C::ExpertJobMulti& j = jobs[it->second];
+            j.nact[j.nt] = acts + (size_t) t * C::kNativeActBytes;
+            j.out[j.nt] = cpu_out + (size_t) e * N;
+            ++j.nt;
+        };
+        for (int e = 0; e < n_ent; ++e) {
+            const int x = h_ids[e];
+            if (!defer) H.score[(size_t) x] += 1.0;
+            h_miss[e] = H.slot_of[(size_t) x] < 0;
+            if (!h_miss[e]) continue;
+            ++n_miss;
+            if (use_net && net_worker->holds((int32_t) li, x)) {
+                remote_assigns.push_back({
+                    static_cast<uint16_t>(e / Kp),
+                    static_cast<uint16_t>(e % Kp),
+                    static_cast<int32_t>(x),
+                    h_ewts[e]
+                });
+                // Zero cpu_out[e] so k_merge_cpu zeroes eparts[e], preventing stale eparts from being added in k_moe_out
+                std::memset(cpu_out + (size_t) e * N, 0, (size_t) N * sizeof(float));
+            } else {
+                ++n_cpu;
+                add_cpu_job(e, x);
+            }
+        }
+        hy_gpu += n_ent - n_miss;
+        if (n_miss == 0) return;
+
+        // Dispatch remote-owned assignments asynchronously BEFORE running local CPU pool so network RTT + remote GPU
+        // execution overlap with local CPU pool execution and primary GPU shared-expert execution.
+        bool net_dispatched = false;
+        if (!remote_assigns.empty()) {
+            net_dispatched = net_worker->begin_async((int32_t) li, (uint32_t) T, h_h, remote_assigns);
+            if (!net_dispatched) {
+                if (!net_warned) {
+                    std::fprintf(stderr, "strata-q36: remote expert dispatch failed; recomputing on the local CPU pool\n");
+                    net_warned = true;
+                }
+                // Immediate fallback before pool runs
+                for (const auto& a : remote_assigns) {
+                    const int e = (int) a.token_idx * Kp + (int) a.slot_idx;
+                    ++n_cpu;
+                    add_cpu_job(e, a.expert_id);
+                }
+                remote_assigns.clear();
+            }
+        }
+
+        if (!jobs.empty()) {
+            const auto tc0 = Clock::now();
+            pool->run_split_multi_native(H.fmt, jobs.data(), (int) jobs.size());
+            hy_cpu_ms += ms_since(tc0);
+        }
+
+        bool remote_ok = false;
+        if (net_dispatched) {
+            const auto tw0 = Clock::now();
+            std::string net_err;
+            remote_ok = net_worker->wait_result(net_sums.data(), &net_mask, &net_err);
+            hy_remote_wait_ms += ms_since(tw0);
+            if (remote_ok) {
+                hy_remote += (long long) remote_assigns.size();
+            } else {
+                if (!net_warned) {
+                    std::fprintf(stderr, "strata-q36: warning: remote expert worker failed on layer %zu (%s); "
+                                 "falling back to local CPU expert pool for remaining execution\n", li, net_err.c_str());
+                    net_warned = true;
+                }
+                // Recompute failed remote assignments locally on CPU pool before releasing the layer
+                const auto tf0 = Clock::now();
+                jobs.clear();
+                open.clear();
+                for (const auto& a : remote_assigns) {
+                    const int e = (int) a.token_idx * Kp + (int) a.slot_idx;
+                    ++n_cpu;
+                    add_cpu_job(e, a.expert_id);
+                }
+                if (!jobs.empty()) {
+                    pool->run_split_multi_native(H.fmt, jobs.data(), (int) jobs.size());
+                }
+                hy_cpu_ms += ms_since(tf0);
+            }
+        }
+        hy_cpu += n_cpu;
+        CK(cudaMemcpyAsync(ecpu, cpu_out, (size_t) n_ent * N * 4, cudaMemcpyHostToDevice, st));
+        CK(cudaMemcpyAsync(d_miss, h_miss, (size_t) n_ent * 4, cudaMemcpyHostToDevice, st));
+        k_merge_cpu<<<n_ent, kThreads, 0, st>>>(eparts, ecpu, d_miss, N);
+        if (remote_ok) {
+            CK(cudaMemcpyAsync(d_rsum, net_sums.data(), (size_t) T * N * 4, cudaMemcpyHostToDevice, st));
+            k_add<<<grid1((int64_t) T * N), kThreads, 0, st>>>(x, d_rsum, (int64_t) T * N);
+        }
+#else
+        (void) li;
+        (void) T;
+#endif
+    }
+
+#endif
     /// The slots to the experts the routing used most (the counts halved each time): at most max_swaps replacements
     /// over all layers, between forwards (the copies are on the engine's stream).
     void rebalance(int max_swaps) {
@@ -2431,7 +2589,12 @@ struct Engine {
     /// token's logits stay in `logits` (its greedy pick in `pick`), hlast its normed hidden.  With the MTP block the
     /// prompt also runs through it (its K / V for every position: row q reads h_{q-1} and token q).  on_chunk(done) runs
     /// after every chunk; false ends the read there (a cancelled request): the tokens processed are returned.
-    template <class F> int64_t process(const int32_t* toks, int64_t n, F on_chunk_) {
+    template <class F> int64_t process(const int32_t* toks, int64_t n, F on_chunk_, bool decode = false) {
+#if defined(STRATA_NETWORK_EXPERTS)
+        net_decode = decode && n == 1;
+#else
+        (void) decode;
+#endif
         const int N = (int) m->g.n_embd;
         auto on_chunk = [&](int64_t done) -> bool {   // a callback returning void never cancels
             if constexpr (std::is_void_v<decltype(on_chunk_(done))>) {
@@ -2459,6 +2622,9 @@ struct Engine {
             pos += 1;
             after_rows(1);
             on_chunk(1);
+#if defined(STRATA_NETWORK_EXPERTS)
+            net_decode = false;
+#endif
             return 1;
         }
         for (int64_t i = 0; i < n; i += tmax) {
@@ -3652,7 +3818,7 @@ struct Serve {
             }
             if (E.pos + 1 > E.ctx) break;
             const int32_t one = nx;
-            E.process(&one, 1, [](int64_t) {});
+            E.process(&one, 1, [](int64_t) {}, true);
             ss.live.push_back(nx);
             fix.clear();
             if (!smp.needs_logits()) nx = E.greedy();
@@ -3727,6 +3893,10 @@ int serve(Engine& E) {
 
 int strata::qwen35::run(int argc, char** argv) {
     std::string model, tokens, force, dump_full, emb_file;
+#if defined(STRATA_NETWORK_EXPERTS)
+    std::string worker_endpoint, worker_plan;
+    int worker_timeout_ms = 5000;
+#endif
     int ctx = 32768, chunk = 0, n_gen = 64, bench_pp = 0, bench_tg = 0, mtp_d = 0, cpu_threads = 0, hybrid_rows = 128;
     double expert_vram = -1.0;
     bool warm = true;
@@ -3772,6 +3942,11 @@ int strata::qwen35::run(int argc, char** argv) {
         else if (a == "--cpu-threads") cpu_threads = std::atoi(next().c_str());
         else if (a == "--expert-slots") expert_slots = std::atoi(next().c_str());
         else if (a == "--hybrid-rows") hybrid_rows = std::atoi(next().c_str());
+#if defined(STRATA_NETWORK_EXPERTS)
+        else if (a == "--expert-worker") worker_endpoint = next();
+        else if (a == "--expert-worker-placement") worker_plan = next();
+        else if (a == "--expert-worker-timeout-ms") worker_timeout_ms = std::atoi(next().c_str());
+#endif
         else if (serve_mode && a.rfind("--", 0) == 0) {
             // serve passes the config's args plus a few of its own: one this engine does not have is said and skipped
             // (with its value), not fatal
@@ -3799,6 +3974,14 @@ int strata::qwen35::run(int argc, char** argv) {
 #endif
     if (mtp_d < 0 || mtp_d > 7) { std::fprintf(stderr, "strata-q36: --mtp takes 0 .. 7 drafts\n"); return 2; }
     if (chunk < 0 || chunk > 4096 || ctx < 256) { std::fprintf(stderr, "strata-q36: bad --chunk / --max-context\n"); return 2; }
+#if defined(STRATA_NETWORK_EXPERTS)
+    if (worker_endpoint.empty() != worker_plan.empty() || worker_timeout_ms <= 0 || worker_timeout_ms > 600000) {
+        std::fprintf(stderr, "strata-q36: network experts require --expert-worker IPv4:port and --expert-worker-placement FILE; timeout 1..600000 ms\n"); return 2;
+    }
+    if (!worker_endpoint.empty() && (mtp_d != 0 || batch > 1 || batch_mtp || vision || !emb_file.empty())) {
+        std::fprintf(stderr, "strata-q36: network experts v1 supports text decode, --mtp 0 and one session only\n"); return 2;
+    }
+#endif
     Model m;
     std::string err;
     try {
@@ -3858,6 +4041,36 @@ int strata::qwen35::run(int argc, char** argv) {
         std::fprintf(stderr, "strata-q36: %s\n", err.c_str());
         return 1;
     }
+#if defined(STRATA_NETWORK_EXPERTS)
+    if (!worker_endpoint.empty()) {
+        if (!E.main_hybrid) {
+            std::fprintf(stderr, "strata-q36: network experts require the hybrid CPU expert pool\n"); return 2;
+        }
+        std::vector<strata::core::ExpertWorkerPair> pairs;
+        if (!strata::core::load_expert_placement_plan(worker_plan, (int)m.g.n_layers, (int)m.g.n_expert, pairs, &err)) {
+            std::fprintf(stderr, "strata-q36: %s\n", err.c_str()); return 2;
+        }
+        E.net_worker = std::make_unique<strata::core::NetworkExpertExecutor>();
+        try {
+            const auto sha = strata::core::expert_worker_model_sha256(*m.file);
+            if (!E.net_worker->connect_and_handshake(worker_endpoint, m.g.n_layers, m.g.n_layers, m.g.n_expert,
+                    m.g.n_embd, m.g.n_ff, m.top_k, sha, worker_timeout_ms, err) || !E.net_worker->install_plan(pairs, err)) {
+                std::fprintf(stderr, "strata-q36: network worker setup failed: %s\n", err.c_str()); return 1;
+            }
+        } catch (const std::exception& ex) {
+            std::fprintf(stderr, "strata-q36: network worker setup failed: %s\n", ex.what()); return 1;
+        }
+        if (!pairs.empty()) {
+            CK(cudaHostAlloc((void**)&E.h_ewts, (size_t)m.top_k * sizeof(float), cudaHostAllocDefault));
+            CK(cudaMalloc(&E.d_rsum, (size_t)m.g.n_embd * sizeof(float)));
+            E.net_sums.resize((size_t)m.g.n_embd);
+        } else {
+            // No remote rows: no added transfers, allocations or execution branches.
+            E.net_worker->print_summary(); E.net_worker.reset();
+        }
+        std::fprintf(stderr, "strata-q36: network placement acknowledged: %zu experts; decode CPU misses only\n", pairs.size());
+    }
+#endif
     struct Report {
         Engine& E;
         ~Report() {
@@ -3865,6 +4078,12 @@ int strata::qwen35::run(int argc, char** argv) {
             if (E.verify_k)
                 for (const auto& kv : E.v_by)
                     std::fprintf(stderr, "strata-q36 VERIFY   %s: %lld mismatches\n", kv.first.c_str(), kv.second);
+#if defined(STRATA_NETWORK_EXPERTS)
+            if (E.net_worker) {
+                E.net_worker->print_summary();
+                std::fprintf(stderr, "strata-q36: network entries %lld, wait %.3f ms; local counts below exclude remote entries\n", E.hy_remote, E.hy_remote_wait_ms);
+            }
+#endif
             if (!E.m->hybrid) return;
             const long long n = E.hy_cpu + E.hy_gpu;
             std::fprintf(stderr, "strata-q36: hybrid experts: %lld of %lld batch entries on the GPU (%.1f%%), %lld on the "
@@ -3872,6 +4091,15 @@ int strata::qwen35::run(int argc, char** argv) {
                          E.hy_cpu, E.hy_cpu_ms, E.hy_swaps);
         }
     } report{E};
+#if defined(STRATA_NETWORK_EXPERTS)
+    struct NetworkCleanup {
+        Engine& E;
+        ~NetworkCleanup() {
+            if (E.h_ewts) { cudaStreamSynchronize(E.st); cudaFreeHost(E.h_ewts); }
+            if (E.d_rsum) cudaFree(E.d_rsum);
+        }
+    } network_cleanup{E};
+#endif
     E.reset();
     E.mtp_d = m.has_mtp ? mtp_d : 0;
     if (draft_vocab < 0 && std::getenv("STRATA_Q36_DRAFT_VOCAB") != nullptr) draft_vocab = std::atoi(std::getenv("STRATA_Q36_DRAFT_VOCAB"));
@@ -3895,7 +4123,7 @@ int strata::qwen35::run(int argc, char** argv) {
             int nx = E.greedy();
             for (int i = 0; i < bench_tg; ++i) {
                 const int32_t one = nx;
-                E.process(&one, 1, [](int64_t) {});
+                E.process(&one, 1, [](int64_t) {}, true);
                 nx = E.greedy();
             }
             const double tg_ms = ms_since(t1);
@@ -3959,7 +4187,7 @@ int strata::qwen35::run(int argc, char** argv) {
         }
         if (i + 1 == n_gen) break;
         const int32_t nx = i < (int) forced.size() ? forced[(size_t) i] : a;
-        E.process(&nx, 1, [](int64_t) {});
+        E.process(&nx, 1, [](int64_t) {}, true);
     }
     if (ff) std::fclose(ff);
     std::printf("gen:");
