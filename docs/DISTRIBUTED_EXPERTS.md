@@ -26,12 +26,12 @@ Python mapping, `pread`, and a repeated `sha256sum` all returned:
 
 A chunk-by-chunk comparison of the primary's mapping and `pread` found no differences
 between those two views during that probe. Thus this is an observed change between reads,
-not proof of a simultaneous mmap-versus-read discrepancy. Size, mtime and ctime were
-unchanged. The cause is unknown. The primary file is on NFS; that fact alone does not
+not proof of a simultaneous mmap-versus-read discrepancy. Reported size, mtime and ctime
+were unchanged. The cause is unknown. The primary file is on NFS; that fact alone does not
 establish a storage or kernel cause.
 
-The handover requires stopping on an integrity failure. No model was repaired, replaced,
-redownloaded, or written by this continuation. Do not bypass the handshake or treat the
+The handover requires stopping on an integrity failure. At that initial checkpoint, no
+model was repaired, replaced, redownloaded, or written. Do not bypass the handshake or treat the
 earlier geometry-only parity run as qualification of these model bytes.
 
 Evidence is outside Git, on each machine in:
@@ -44,6 +44,85 @@ The primary directory contains the initial and repeated hashes, the mapping prob
 its source, protocol logs, both build receipts, preserved pre-integration binaries,
 and the rejected real-worker parity log. `evidence-manifest.sha256` identifies the
 saved files. This directory is local evidence, not a release artifact.
+
+### User-supplied follow-up, 4 November 2026
+
+The user supplied a `sha256sum` result run on `pve01` for the same model path. It
+matched the full stock hash above. This is a user-supplied observation, not a new
+measurement by this continuation. The transcript does not include the server's
+mount information or a simultaneous server/client capture.
+
+The user then supplied alternating NFS and SSH-stream results from Lucy. All three
+NFS passes returned the full `226dc880...` hash above. SSH passes 1 and 2 returned the
+full stock `55983c5a...` hash. SSH pass 3 is truncated to `55983c` in the supplied
+text, so it is not counted as a complete hash result. The duplicated paste is one
+reported sequence, not two independent runs. These checks were not repeated here.
+
+This supports a failure associated with Lucy's NFS read path during those passes.
+It does not identify its cause or establish that Lucy's mixed RAM is faulty or
+healthy. A correct SSH-stream hash does not explain how the differing NFS bytes
+arose. No differing byte offsets or bit counts have been established for this file.
+
+The selected workaround is a separate local download from
+`unsloth/Qwen3.6-35B-A3B-MTP-GGUF`, using the exact filename, byte count and SHA-256
+pinned in `setup.py`. Two successful full-file hash checks are required before
+retrying the content-hash handshake and numerical parity. This permits qualification
+of the new local artifact; it does not resolve or clear the original NFS incident.
+The NFS model and existing evidence must remain untouched.
+
+At the local-storage preflight, neither disk had room: `/` had about 3.6 GiB free
+and `/mnt/work` about 6.9 GiB, while the model alone needs 21.3 GiB. The Hugging Face
+CLI dry run found the exact 22.9 GB file. The user then authorized clearing Lucy's
+`uv` and `sccache` caches to make room for a separate local download.
+
+### Local ext4 retry: integrity gate failed again
+
+The cache cleanup completed. The exact file was downloaded directly from Hugging
+Face revision `5bc3e238d916f48a861bac2f8a1990a0e9b7e98d` to:
+
+```text
+/home/ztripez/models/qwen36/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf
+```
+
+This path is on Lucy's local `/dev/nvme0n1p2` ext4 filesystem. Its size was exactly
+22,853,663,008 bytes. Two consecutive full-file `sha256sum` checks matched the stock
+hash. Both binary sets also matched the previously saved build manifests.
+
+The next real CUDA-to-HIP parity test rejected the model during the content-hash
+handshake. Astor reported the stock hash, but Lucy's mapping of the new local file
+reported:
+
+```text
+eca1cd3dbea39929b314baea37f35efadbd2dbe8535552e258548c352a438c79
+```
+
+An independent Python probe then obtained that same alternate hash through both
+`mmap` and `pread`. It compared corresponding 4 MiB chunks and found no differences
+between those two views. Reported device, inode, size, mtime and ctime remained
+unchanged across the recorded checks. Chunk hashes are saved for later byte-level
+investigation; they do not establish the number of bytes differing from stock.
+A fresh `sha256sum` after the probe also returned `eca1cd3d...`; its comparison
+against the pinned stock digest failed. Thus the later mismatch was reproduced by
+the same command that had passed both initial checks, as well as by the mapping
+and `pread` probes.
+
+The local-download workaround therefore did **not** restore the integrity prerequisite.
+This reproduces a read-integrity discrepancy on local ext4, so the investigation
+cannot be limited to the NFS path. It does not establish faulty RAM, a disk failure,
+or an on-disk modification. Qualification stopped before numerical expert execution;
+no full-model or performance test was started. The worker exited after its one test
+session. The original NFS model, mounts and cache settings were not changed.
+
+New evidence is separate from the earlier failure record:
+
+```text
+/var/tmp/strata-local-model-20261104-HYw3mB/
+```
+
+It contains the cleanup logs, pinned HF metadata, download receipt, both successful
+hash checks, the rejected handshake logs, file metadata and independent read probe.
+`qualification.json` records the stopped gate; `evidence-manifest.sha256` identifies
+the saved evidence files. No thresholds were changed to continue execution.
 
 ## Observed machines
 
