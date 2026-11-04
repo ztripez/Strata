@@ -61,7 +61,7 @@ reported sequence, not two independent runs. These checks were not repeated here
 This supports a failure associated with Lucy's NFS read path during those passes.
 It does not identify its cause or establish that Lucy's mixed RAM is faulty or
 healthy. A correct SSH-stream hash does not explain how the differing NFS bytes
-arose. No differing byte offsets or bit counts have been established for this file.
+arose. At that checkpoint, no differing byte offsets or bit counts had been established.
 
 The selected workaround is a separate local download from
 `unsloth/Qwen3.6-35B-A3B-MTP-GGUF`, using the exact filename, byte count and SHA-256
@@ -123,6 +123,61 @@ It contains the cleanup logs, pinned HF metadata, download receipt, both success
 hash checks, the rejected handshake logs, file metadata and independent read probe.
 `qualification.json` records the stopped gate; `evidence-manifest.sha256` identifies
 the saved evidence files. No thresholds were changed to continue execution.
+
+### Targeted byte comparison: buffered reads differ, direct reads match
+
+A fresh reference pass on `pve01` matched the full stock SHA-256. Its backing path
+was confirmed as local ZFS. Comparing its 5,449 block hashes with the saved Lucy
+manifest identified one differing 4 MiB block at zero-based file offset
+6,559,891,456. This is a comparison with the earlier Lucy snapshot, not a new
+whole-file scan of Lucy.
+
+That block was captured through buffered reads and three aligned `O_DIRECT` reads.
+The reference block was fetched over SSH and checked against its server-side hash.
+All three direct reads matched it byte-for-byte. The buffered samples contained
+9, 12, 14 and 14 differing bits, respectively, across 9, 12, 13 and 13 bytes.
+Thus the buffered result changed during the test while the direct result stayed
+equal to the reference. The bad buffered bytes were saved before the first direct
+read. The original file was not written and no caches were dropped.
+
+The first difference in the initial buffered sample was at zero-based file offset
+6,560,024,129 (one-based byte 6,560,024,130): reference `0x7f`, buffered `0x3f`, a
+one-bit XOR of `0x40`. Later samples also differed at an earlier offset. Raw block
+captures and every observed differing position are retained; the earlier alternate
+whole-file hash does not identify these later, changing buffered samples.
+
+The reader used `STATX_DIOALIGN` and aligned allocation, refused fallback, checked
+the descriptor flags and required a complete read. Syscall traces show
+`O_RDONLY|O_DIRECT`, matching range offsets and successful 4,194,304-byte `pread64`
+returns. This is evidence for completed direct reads of this range, not proof of
+the entire on-disk model or of reads bypassing a storage controller's cache. See
+the [Linux O_DIRECT notes](https://man7.org/linux/man-pages/man2/open.2.html) and
+[statx alignment fields](https://man7.org/linux/man-pages/man2/statx.2.html).
+
+The result strongly supports corruption associated with Lucy's cached-memory read
+path. It does not identify a faulty DIMM or distinguish hardware instability from
+software or DMA corruption. Reported file metadata remained unchanged. Inference
+qualification stays stopped.
+
+Read-only hardware checks found NVMe critical warning, media-error and error-log
+counts of zero. SMBIOS reports two 32 GiB Kingston modules and two 16 GiB Corsair
+modules, all configured at 2133 MT/s, with no memory-array error correction.
+The captured kernel log has older unclean-shutdown and filesystem warnings; none
+is established as the cause. These observations do not establish hardware health.
+The next hardware investigation is offline Memtest86+ across the full 96 GiB and
+module-group isolation if errors appear, following its
+[testing and troubleshooting guidance](https://www.memtest.org/readme).
+No memory stress test, reboot, BIOS change or filesystem repair was performed.
+
+Evidence, including the raw block captures, C reader source, syscall traces,
+comparison JSON and hardware logs, is in:
+
+```text
+/var/tmp/strata-byte-integrity-20261104-GrepNw/
+```
+
+A separate copy at the same path on Astor passed every entry in
+`evidence-manifest.sha256`, preserving the captures away from Lucy.
 
 ## Observed machines
 
