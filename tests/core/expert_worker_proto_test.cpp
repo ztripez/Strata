@@ -196,8 +196,11 @@ void executor_tests() {
         Server server;
         NetworkExpertExecutor net;
         check(connect(net, server.endpoint(), 1000, err), err.c_str());
-        check(!net.holds(0, 3), "ownership before READY");
+        check(!net.holds(0, 3) && !net.holds_layer(0) && !net.has_any_owned(), "ownership before READY");
         check(net.install_plan(plan, err), err.c_str());
+        check(net.has_any_owned() && net.holds_layer(0) && net.holds_layer(1) && !net.holds_layer(2) &&
+                  !net.holds_layer(-1) && !net.holds_layer(L),
+              "layer ownership after READY");
         check(!net.install_plan(plan, err), "mutable plan accepted");
         valid_execution(net, 5);
         std::vector<float> acts(N, 1), out(N);
@@ -224,7 +227,7 @@ void executor_tests() {
         NetworkExpertExecutor net;
         check(connect(net, server.endpoint(), 1000, err), err.c_str());
         check(net.install_plan({}, err), err.c_str());
-        check(!net.holds(0, 3), "zero plan owns expert");
+        check(!net.holds(0, 3) && !net.holds_layer(0) && !net.has_any_owned(), "zero plan owns expert");
     }
     for (auto fault : {Fault::identity, Fault::caps_id, Fault::ready_count, Fault::stale, Fault::layer, Fault::count,
                        Fault::coverage, Fault::nan, Fault::short_payload, Fault::disconnect, Fault::timeout}) {

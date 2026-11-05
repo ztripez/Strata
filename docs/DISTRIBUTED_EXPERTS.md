@@ -1,18 +1,25 @@
 # Network expert execution: experimental checkpoint
 
 This fork adds a Linux-only expert worker for **Qwen3.6 (`qwen35moe`) text decode**.
-It is off at build time and at run time. Full-model functional, zero-ownership, and
-fault-recovery checks have now passed on the Kingston-only configuration, while the
-tested 32-expert (61 MiB) placement remains a **correctness/integration checkpoint
-and does not yet provide a throughput or primary-RAM capacity gain**.
+It is off at build time and at run time. Full-model functional, zero-ownership,
+fault-recovery, and a 10 GbE trace-ranked placement sweep (up to `7,794` experts /
+`13.92 GiB` worker VRAM) have now been completed on the Kingston-only configuration.
+Eliminating unowned-layer `h_ewts` copies removed the zero-ownership overhead, and
+layer-concentrated placement (`layer-24L-full`, `6,144` experts across the top 24
+layers, `10.91 GiB` worker VRAM) cut primary CPU expert pool time during decode from
+`7,953 ms` to `2,755 ms` (`-65.4%`) and raised warm median decode throughput from
+`47.22 tok/s` to `49.62 tok/s` (`+5.1%`). Every expert is still retained in primary
+host RAM for fallback (`18.75 GiB`), so primary-RAM capacity reduction requires a
+separate remote-only residency mode with an explicit failure policy.
 
-## Current checkpoint: full-model functional, fault-recovery, and 6-case campaign completed
+## Current checkpoint: full-model functional, fault-recovery, and 10 GbE placement sweep
 
 Following the Kingston-only integrity and expert-parity recheck on 5 November 2026,
-full-model CLI logit comparisons and the 6-case `--serve` qualification campaign
-(`bench/distributed_experts.mjs`) were completed between `lucy` (`RTX 3080 10 GiB`,
-CUDA) and `astor` (`AMD Radeon RX 6800 16 GiB`, HIP, `192.168.63.177:19415` via
-`enp7s0` 1 GbE route) on the verified stock `Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf`
+full-model CLI logit comparisons, the 6-case `--serve` qualification campaign
+(`bench/distributed_experts.mjs`), and a 10-point trace-driven placement sweep
+(`tools/qwen35/generate_placement_from_trace.py`) were completed between `lucy`
+(`RTX 3080 10 GiB`, CUDA) and `astor` (`AMD Radeon RX 6800 16 GiB`, HIP,
+`192.168.63.177:19415`) on the verified stock `Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf`
 (`55983c5a...`). Physical DIMM placement remains unconfirmed (SMBIOS reports A1/B1,
 two 32 GiB Kingston `KF3200C16D4/32GX` at 3200 MT/s; one Memtest86+ pass only).
 
@@ -44,10 +51,49 @@ All runs used `STRATA_Q8_PACKED=0 STRATA_Q36_NO_MMQ=1 --max-context 2048 --chunk
   Overall `rtt_us` p50/p95/p99 = `426 / 699 / 804 us`, `wait_us` p50/p95/p99 = `151 / 447 / 550 us`, `worker_stage_us` p50 = `33 us`, `worker_kernel_us` p50 = `80 us`, `worker_copy_us` p50 = `21 us`, `worker_total_us` p50 = `193 us` (`layer 0`: 115 samples, wait p50 `144 us`; `layer 1`: 97 samples, wait p50 `181 us`; `layer 20`: 48 samples, wait p50 `248 us`; `layer 39`: 96 samples, wait p50 `83 us`).
 - **GPU utilization (`100 ms` sampling) & post-run model integrity:**
   Primary RTX 3080 averaged `18.2%` busy (`9,087 MiB` peak VRAM) during `remote` vs `23.0%` (`9,144 MiB`) in `baseline`; worker RX 6800 averaged `16.1%` busy (`42%` max, `2,295.2 MiB` VRAM). Post-campaign full-file `sha256sum` of `/home/ztripez/models/qwen36/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf` matched stock (`55983c5a...`) with unchanged `stat` metadata.
-- **Why this 32-expert placement is not a speedup:**
-  32 experts across 4 layers cover only `398` of `275,520` routed entries (`0.14%`), while enabling `--expert-worker` copies `h_ewts` per hybrid layer and waits ~`65 ms` across 356 dispatches over the 1 GbE default route (`47.91` vs `49.56 tok/s` warm median). Qualifying a throughput or capacity gain requires a large multi-layer placement (e.g., thousands of experts in the worker's 15.8 GiB free VRAM over the 10 GbE route) and/or stripping remote-owned experts from primary host RAM.
 
-All campaign artifacts, logit dumps, GPU utilization traces, and `evidence-manifest.sha256` are saved in `/var/tmp/strata-full-decode-20261105-urobIt/` on `lucy` and mirrored under `/var/tmp/strata-full-decode-20261105-urobIt/primary-evidence/` on `astor`.
+All initial campaign artifacts, logit dumps, GPU utilization traces, and `evidence-manifest.sha256` are saved in `/var/tmp/strata-full-decode-20261105-urobIt/` on `lucy` and mirrored under `/var/tmp/strata-full-decode-20261105-urobIt/primary-evidence/` on `astor`.
+
+### 3. Zero-ownership overhead fix and 10 GbE trace-ranked placement sweep
+
+In the initial campaign above, `moe_hybrid_gpu` and `moe_hybrid_cpu` checked `net_worker->healthy()` on all 40 layers even when a layer owned zero remote experts, queueing an extra per-layer device-to-host `h_ewts` copy and taking `moe_network_cpu` on unowned layers. Adding `NetworkExpertExecutor::holds_layer(layer)` (and `has_any_owned()`) ensures that any layer without remote-owned experts takes the unmodified local fast path with zero extra transfers or branches.
+
+With `ip route get 192.168.63.177` verified on the `enp4s0` 10 GbE route (`src 192.168.60.155`, `10,000 Mb/s`), we captured exact decode CPU-miss traces (`STRATA_Q36_TRACE_MISSES`, `181,440` routed decode entries across the 9 benchmark requests: `25,753` primary GPU hits [`14.2%`] and `155,687` CPU pool misses [`85.8%`] spanning `7,794` unique `(layer, expert)` pairs) and generated two families of placements via `tools/qwen35/generate_placement_from_trace.py`:
+
+1. **Global expert-ranked (`--mode expert`):** Ranks individual `(layer, expert)` pairs across all 40 layers by `decode_misses / worker_slot_bytes` (`256`, `1,024`, `2,048`, `4,096`, and all `7,794` active decode-miss experts).
+2. **Layer-concentrated (`--mode layer`):** Ranks whole layers by `layer_decode_misses / layer_worker_bytes` and places all 256 experts of the top-$L$ layers (`4`, `8`, `16`, `24`, and `30` layers) on the worker so the remaining $40 - L$ layers pay zero network synchronization or `h_ewts` D2H overhead while the offloaded layers eliminate `100%` of their local CPU pool work during decode.
+
+| Placement case | Worker experts / layers | Worker VRAM (GiB) | Warm decode tok/s (med / mean) | All decode tok/s (med / mean) | Dispatched layers | Remote entries (`%` decode misses) | Total CPU pool ms (decode CPU ms) | Total network wait ms | `rtt_us` p50 | `wait_us` p50 | `worker_kernel_us` p50 | `worker_total_us` p50 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `baseline` | 0 / 0 | 0.00 | 47.22 / 47.15 | 47.07 / 46.87 | 0 | 0 (0.0%) | 9,537 (~7,953) | 0.0 | — | — | — | — |
+| `zero` (0 remote) | 0 / 0 | 0.00 | 47.83 / 47.71 | 47.78 / 47.95 | 0 | 0 (0.0%) | 9,203 (~7,619) | 0.0 | — | — | — | — |
+| `contig-32` (`0-7` on 4L) | 32 / 4 | 0.06 | 48.17 / 47.93 | 47.99 / 47.45 | 356 | 398 (0.3%) | 9,175 (~7,591) | 165.9 | 455 | 172 | 80 | 194 |
+| `expert-256` | 256 / 37 | 0.46 | 47.68 / 47.78 | 47.64 / 47.47 | 13,741 | 24,435 (15.7%) | 7,994 (~6,410) | 1,006.7 | 277 | 55 | 35 | 144 |
+| `expert-1024` | 1,024 / 40 | 1.82 | 48.07 / 48.11 | 48.06 / 47.98 | 19,969 | 61,412 (39.4%) | 6,158 (~4,574) | 2,675.7 | 286 | 120 | 41 | 150 |
+| `expert-2048` | 2,048 / 40 | 3.65 | 48.63 / 48.40 | 48.44 / 48.44 | 22,377 | 93,200 (59.9%) | 4,641 (~3,057) | 4,039.3 | 283 | 176 | 47 | 155 |
+| `expert-4096` | 4,096 / 40 | 7.32 | 48.46 / 48.32 | 48.52 / 48.40 | 22,670 | 131,856 (84.7%) | 2,739 (~1,155) | 6,039.4 | 291 | 260 | 63 | 168 |
+| `expert-7794` | 7,794 / 40 | 13.92 | 48.68 / 48.39 | 48.61 / 48.53 | 22,680 | 155,548 (99.9%) | 1,584 (~0) | 7,242.9 | 293 | 315 | 65 | 175 |
+| `layer-4L-full` | 1,024 / 4 | 1.81 | 49.02 / 48.74 | 48.99 / 48.75 | 2,268 | 16,930 (10.9%) | 8,224 (~6,640) | 760.9 | 306 | 330 | 66 | 178 |
+| `layer-8L-full` | 2,048 / 8 | 3.62 | 48.89 / 48.48 | 48.74 / 48.71 | 4,536 | 33,284 (21.4%) | 7,493 (~5,909) | 1,465.2 | 296 | 316 | 67 | 177 |
+| `layer-16L-full` | 4,096 / 16 | 7.28 | 48.85 / 48.92 | 48.85 / 49.05 | 9,072 | 65,538 (42.1%) | 5,931 (~4,347) | 2,857.4 | 290 | 309 | 67 | 177 |
+| **`layer-24L-full`** | **6,144 / 24** | **10.91** | **49.62 / 49.34** | **49.59 / 49.44** | **13,608** | **96,784 (62.2%)** | **4,339 (~2,755)** | **4,268.7** | **285** | **305** | **66** | **176** |
+| `layer-30L-full` | 7,680 / 30 | 13.63 | 48.37 / 48.51 | 48.25 / 48.56 | 17,010 | 119,045 (76.5%) | 3,410 (~1,826) | 5,389.4 | 287 | 308 | 65 | 175 |
+
+*(Note: Total `hy_cpu_ms` reported at engine exit includes `~1,584 ms` of local CPU pool execution during the 9 prefill requests [`75,089` prefill CPU misses], because prefill stays local. Decode-only CPU pool time is `hy_cpu_ms - 1,584 ms`.)*
+
+- **Break-even economics (per-layer network synchronization vs. local CPU pool time):**
+  On `lucy` (12-thread CPU pool), one hybrid MoE layer during decode takes an average of `~350 us` on the local CPU pool (`~7,953 ms / 22,680` layer steps). Over `enp4s0` (10 GbE), a full-layer remote dispatch to `astor` (`AMD Radeon RX 6800`) takes `worker_kernel_us` p50 = `65–67 us`, `worker_total_us` p50 = `175–178 us`, and network `rtt_us` p50 = `285–306 us` (`wait_us` p50 = `305–315 us` after overlapping with primary GPU shared-expert execution).
+  - When experts are spread thinly across all 40 layers (`expert-256` to `expert-2048`), almost every layer (`13,741` to `22,377` of `22,680` decode layer steps) pays a network dispatch *and* still runs remaining misses on the local CPU pool.
+  - When entire layers are offloaded (`layer-4L-full` to `layer-24L-full`), unowned layers (`16` to `36` layers) pay zero network overhead and zero `h_ewts` copies, while each offloaded layer replaces `~350 us` of 12-thread local CPU pool work with `~305 us` of network wait (`~45 us` net wall-time gain per offloaded layer, peaking at **`49.62 tok/s` warm median** at 24 layers / `6,144` experts / `10.91 GiB` worker VRAM). Beyond 24 layers (`layer-30L-full` and `expert-7794`), the remaining lowest-miss layers take less than `~308 us` locally on the CPU pool, so offloading them adds slightly more network wait (`+1,121 ms` from 24L to 30L) than the CPU time saved (`-929 ms`).
+- **32-token teacher-forced full-logit qualification across the sweep:**
+  Conditioned on the identical baseline token prefix (`prompt 0`, 32 steps × `248,320` floats), all sweep points produce finite logits with zero fallbacks and bounded cross-device differences that do not grow with remote coverage:
+  - `zero` (`0` remote entries): `unequal_floats = 0`, `relative_l2 = 0`, `mean_kl = 0`, `32 / 32` top-1 tokens match.
+  - `expert-1024` (`1,160` dispatches, `3,579` remote entries): `relative_l2 = 0.0410`, `mean_kl = 0.00390`, `max_kl = 0.0392`, **`32 / 32` top-1 tokens match**.
+  - `layer-24L-full` (`744` dispatches, `4,785` remote entries): `relative_l2 = 0.0420`, `mean_kl = 0.00227`, `max_kl = 0.00899`, **`32 / 32` top-1 tokens match**.
+  - `expert-4096` (`1,240` dispatches, `6,779` remote entries): `relative_l2 = 0.0398`, `mean_kl = 0.00274`, `max_kl = 0.0161`, `31 / 32` top-1 tokens match.
+  - `expert-7794` (`1,240` dispatches, `7,658` remote entries, `99.9%` of decode misses): `relative_l2 = 0.0406`, `mean_kl = 0.00313`, `max_kl = 0.0281`, `31 / 32` top-1 tokens match.
+- **Post-sweep model integrity & evidence:**
+  Post-sweep full-file `sha256sum` of `/home/ztripez/models/qwen36/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf` matched stock (`55983c5a...`) with unchanged `stat` metadata. All sweep traces, placement files, logit dumps, and `evidence-manifest.sha256` are saved in `/var/tmp/strata-placement-sweep-20261105-laBhdK/` on `lucy` and mirrored under `/var/tmp/strata-placement-sweep-20261105-laBhdK/primary-evidence/` on `astor`.
 
 ## Earlier checkpoint (5 November 2026): integrity and expert parity recheck passed
 

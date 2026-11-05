@@ -69,6 +69,8 @@ bool NetworkExpertExecutor::connect_and_handshake(const std::string &endpoint, u
     n_ff_ = n_ff;
     top_k_ = top_k;
     owned_.assign(static_cast<size_t>(total_layers) * n_experts, 0);
+    layer_owned_.assign(static_cast<size_t>(total_layers), 0);
+    ready_ = {};
     stats_ = {};
     fd_ = expert_worker_connect(host, port, timeout_ms, &err);
     if (fd_ < 0)
@@ -131,6 +133,7 @@ bool NetworkExpertExecutor::install_plan(const std::vector<ExpertWorkerPair> &pa
         return false;
     }
     std::vector<uint8_t> proposed(owned_.size(), 0);
+    std::vector<uint8_t> proposed_layers(layer_owned_.size(), 0);
     for (const auto &p : pairs) {
         if (p.layer < 0 || static_cast<uint32_t>(p.layer) >= total_layers_ || p.expert < 0 ||
             static_cast<uint32_t>(p.expert) >= n_experts_) {
@@ -143,6 +146,7 @@ bool NetworkExpertExecutor::install_plan(const std::vector<ExpertWorkerPair> &pa
             return false;
         }
         bit = 1;
+        proposed_layers[static_cast<size_t>(p.layer)] = 1;
     }
     ExpertWireWriter w;
     w.put(static_cast<uint32_t>(pairs.size()));
@@ -164,6 +168,7 @@ bool NetworkExpertExecutor::install_plan(const std::vector<ExpertWorkerPair> &pa
         return false;
     }
     owned_ = std::move(proposed); // Publish ownership only after the exact READY acknowledgement.
+    layer_owned_ = std::move(proposed_layers);
     installed_ = true;
     stats_.resident_experts = ready_.loaded_count;
     stats_.load_time_us = ready_.load_time_us;

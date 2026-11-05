@@ -65,6 +65,20 @@ class NetworkExpertExecutor {
     const ExpertWorkerCapsPayload &caps() const { return caps_; }
     const ExpertWorkerReadyPayload &ready_info() const { return ready_; }
 
+    // Query whether any remote experts are owned and the worker connection is healthy.
+    bool has_any_owned() const {
+        return healthy_.load(std::memory_order_relaxed) && ready_.loaded_count > 0;
+    }
+
+    // Query whether `layer` has at least one remote-owned expert and the worker connection is healthy.
+    bool holds_layer(int32_t layer) const {
+        if (!healthy_.load(std::memory_order_relaxed))
+            return false;
+        if (layer < 0 || layer >= static_cast<int32_t>(total_layers_))
+            return false;
+        return layer_owned_[static_cast<size_t>(layer)] != 0;
+    }
+
     // Query whether (layer, expert) is owned by the remote worker and the worker connection is healthy.
     bool holds(int32_t layer, int32_t expert) const {
         if (!healthy_.load(std::memory_order_relaxed))
@@ -113,7 +127,8 @@ class NetworkExpertExecutor {
 
     ExpertWorkerCapsPayload caps_{};
     ExpertWorkerReadyPayload ready_{};
-    std::vector<uint8_t> owned_; // [total_layers * n_experts]
+    std::vector<uint8_t> owned_;       // [total_layers * n_experts]
+    std::vector<uint8_t> layer_owned_; // [total_layers]
 
     std::atomic<bool> active_{false};
     std::atomic<bool> healthy_{false};

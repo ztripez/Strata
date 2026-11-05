@@ -1276,10 +1276,11 @@ struct Engine {
     float *h_ewts = nullptr, *d_rsum = nullptr;
     std::vector<float> net_sums;
     uint8_t net_mask = 0;
-    bool net_decode = false, net_warned = false;
+    bool net_decode = false, net_warned = false, trace_decode = false;
     long long hy_remote = 0;
     double hy_remote_wait_ms = 0;
     std::vector<strata::core::ExpertWorkerAssignment> remote_assigns;
+    std::vector<uint64_t> trace_hits, trace_misses;
 #endif
     // decode / verify rows: their routing is counted once the rows are kept (commit), so a verify window's rejected
     // drafts never move the slots; the slots follow the counts at every kRebalanceEvery-th position exactly (a
@@ -2242,7 +2243,7 @@ struct Engine {
         const int64_t n_ent = (int64_t) T * Kp;
         CK(cudaMemcpyAsync(h_ids, ids, (size_t) n_ent * 4, cudaMemcpyDeviceToHost, st));
 #if defined(STRATA_NETWORK_EXPERTS)
-        if (net_decode && net_worker && net_worker->healthy())
+        if (net_decode && net_worker && net_worker->holds_layer((int32_t) li))
             CK(cudaMemcpyAsync(h_ewts, ewts, (size_t) n_ent * 4, cudaMemcpyDeviceToHost, st));
 #endif
         CK(cudaMemcpyAsync(h_h, h, (size_t) T * N * 4, cudaMemcpyDeviceToHost, st));
@@ -2256,7 +2257,7 @@ struct Engine {
     /// rows uploaded and merged into the entries' rows.
     void moe_hybrid_cpu(size_t li, int T) {
 #if defined(STRATA_NETWORK_EXPERTS)
-        if (net_decode && net_worker && net_worker->healthy()) { moe_network_cpu(li, T); return; }
+        if (net_decode && net_worker && net_worker->holds_layer((int32_t) li)) { moe_network_cpu(li, T); return; }
 #endif
 #if defined(STRATA_Q36_CPU_POOL)
         namespace C = strata::kernels::cpu;
@@ -2282,6 +2283,13 @@ struct Engine {
             const int x = h_ids[e];
             if (!defer) H.score[(size_t) x] += 1.0;
             h_miss[e] = H.slot_of[(size_t) x] < 0;
+#if defined(STRATA_NETWORK_EXPERTS)
+            if (trace_decode && net_decode && !warming && li < m->layers.size()) {
+                const size_t idx = li * (size_t) g.n_expert + (size_t) x;
+                if (h_miss[e]) ++trace_misses[idx];
+                else ++trace_hits[idx];
+            }
+#endif
             if (!h_miss[e]) continue;
             ++n_miss;
             const int t = e / Kp;
@@ -2363,6 +2371,11 @@ struct Engine {
             const int x = h_ids[e];
             if (!defer) H.score[(size_t) x] += 1.0;
             h_miss[e] = H.slot_of[(size_t) x] < 0;
+            if (trace_decode && net_decode && !warming && li < m->layers.size()) {
+                const size_t idx = li * (size_t) g.n_expert + (size_t) x;
+                if (h_miss[e]) ++trace_misses[idx];
+                else ++trace_hits[idx];
+            }
             if (!h_miss[e]) continue;
             ++n_miss;
             if (use_net && net_worker->holds((int32_t) li, x)) {
@@ -4070,6 +4083,12 @@ int strata::qwen35::run(int argc, char** argv) {
         }
         std::fprintf(stderr, "strata-q36: network placement acknowledged: %zu experts; decode CPU misses only\n", pairs.size());
     }
+    const char* trace_path = std::getenv("STRATA_Q36_TRACE_MISSES");
+    if (trace_path && *trace_path && E.main_hybrid) {
+        E.trace_decode = true;
+        E.trace_hits.assign((size_t)m.g.n_layers * (size_t)m.g.n_expert, 0);
+        E.trace_misses.assign((size_t)m.g.n_layers * (size_t)m.g.n_expert, 0);
+    }
 #endif
     struct Report {
         Engine& E;
@@ -4079,6 +4098,24 @@ int strata::qwen35::run(int argc, char** argv) {
                 for (const auto& kv : E.v_by)
                     std::fprintf(stderr, "strata-q36 VERIFY   %s: %lld mismatches\n", kv.first.c_str(), kv.second);
 #if defined(STRATA_NETWORK_EXPERTS)
+            if (E.trace_decode) {
+                if (const char* tp = std::getenv("STRATA_Q36_TRACE_MISSES")) {
+                    if (FILE* tf = std::fopen(tp, "w")) {
+                        std::fprintf(tf, "layer\texpert\tdecode_hits\tdecode_misses\tworker_slot_bytes\n");
+                        const int64_t nl = E.m->g.n_layers, ne = E.m->g.n_expert;
+                        for (int64_t l = 0; l < nl; ++l) {
+                            const size_t wbytes = (E.m->layers[(size_t)l].L.bytes + 255u) & ~size_t(255u);
+                            for (int64_t e = 0; e < ne; ++e) {
+                                const size_t idx = (size_t)l * (size_t)ne + (size_t)e;
+                                std::fprintf(tf, "%lld\t%lld\t%llu\t%llu\t%zu\n", (long long)l, (long long)e,
+                                             (unsigned long long)E.trace_hits[idx],
+                                             (unsigned long long)E.trace_misses[idx], wbytes);
+                            }
+                        }
+                        std::fclose(tf);
+                    }
+                }
+            }
             if (E.net_worker) {
                 E.net_worker->print_summary();
                 std::fprintf(stderr, "strata-q36: network entries %lld, wait %.3f ms; local counts below exclude remote entries\n", E.hy_remote, E.hy_remote_wait_ms);
