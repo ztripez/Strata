@@ -3,7 +3,49 @@
 This fork adds a Linux-only expert worker for **Qwen3.6 (`qwen35moe`) text decode**.
 It is off at build time and at run time. It is **not qualified for inference or a speedup**.
 
-## Current gate: model integrity failed
+## Current checkpoint: integrity and expert parity recheck passed
+
+On 5 November 2026, the user reported a Memtest failure with the Corsair kit and
+returned Lucy to Linux with only the Kingston pair. The supplied Kingston-only
+photos show one completed Memtest86+ pass and zero errors; no longer completed
+test duration is claimed here. Live SMBIOS now reports two 32 GiB Kingston
+`KF3200C16D4/32GX` modules in A1/B1 at 3200 MT/s, with A2/B2 empty.
+
+The requested recheck passed with the existing local model and unchanged CUDA/HIP
+binaries. It performed this sequence:
+
+1. The full local-file SHA-256 matched stock.
+2. The real CUDA-to-HIP content-hash handshake passed. All 11 expert comparisons
+   passed against the CUDA and CPU references at the original tolerances. The
+   worker loaded 32 experts across layers 0, 1, 20 and 39, completed nine requests
+   containing 25 expert assignments, and reported zero fallbacks.
+3. The full local-file SHA-256 still matched stock after GPU execution.
+4. Four buffered and three aligned direct reads of the previously affected
+   4 MiB block all matched the preserved server reference byte-for-byte. The
+   direct-read syscall traces confirm complete reads with `O_DIRECT`. Reported
+   file metadata stayed unchanged.
+
+The model path was:
+
+```text
+/home/ztripez/models/qwen36/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf
+```
+
+The recheck used the same reader, block offset 6,559,891,456, and reference hash
+as the earlier failure. No model was replaced, no caches were dropped and no
+network route was changed. The current route to the worker selects `enp4s0`.
+The one-session test worker exited normally.
+
+Evidence is in `/var/tmp/strata-kingston-recheck-20261105-UfoqQI/`. A separate copy
+on Astor under that directory's `primary-evidence/` passed the full evidence
+checksum manifest.
+This clears the integrity and expert-level parity prerequisite for continuing
+development on this configuration. Full-model distributed inference, zero-ownership
+token/logit identity, inference-time worker recovery and paired throughput/capacity
+qualification remain pending. This bounded recheck is not a long-duration memory
+stability result. All earlier failure evidence remains retained below.
+
+## Historical model integrity failure, 4 November 2026
 
 On 4 November 2026, the new content-hash handshake refused the primary and worker pair.
 The source revision was `ffa80d73133ea5c548aefe57889a16e8085a938f`, plus this feature's local changes.
@@ -179,7 +221,7 @@ comparison JSON and hardware logs, is in:
 A separate copy at the same path on Astor passed every entry in
 `evidence-manifest.sha256`, preserving the captures away from Lucy.
 
-## Observed machines
+## Observed machines, 4 November 2026
 
 | Role | Host and data address | GPU reported by runtime | Toolchain | Active link |
 | --- | --- | --- | --- | --- |
@@ -349,23 +391,26 @@ loading a larger plan exceeds the deadline; the maximum is 600,000 ms.
 
 ## Validation and remaining work
 
-**Passed in this continuation:** CUDA and HIP builds; GPU-free protocol/executor tests
+**Passed:** the 5 November Kingston-only full-hash and targeted-read recheck and
+all 11 real-worker expert parity comparisons described above. Earlier validation
+passed CUDA and HIP builds and GPU-free protocol/executor tests
 on both hosts; address/undefined-behavior sanitizer tests; a 1,000-request CPU-mock run
 over both the initial 1 Gb/s route and the later 10 Gb/s path. Tests cover golden wire bytes, sparse and repeated activation
 rows, zero ownership, invalid placement, concurrent request rejection, reconnect, bad
 model identity, stale IDs, incomplete READY, incorrect result coverage, nonfinite results,
 disconnect and whole-frame/request deadlines. Failed results leave caller buffers unchanged.
 
-**Failed:** the real CUDA-primary/HIP-worker parity handshake rejected different model
+**Retained earlier failures:** the real CUDA-primary/HIP-worker parity handshake rejected different model
 content hashes. The default-settings pre-integration CUDA run also ran out of memory.
 Both failures are retained. The pre-integration binary completed a narrower run after
 using the explicit fit settings, but that is not a valid paired performance comparison.
 
 **Historical evidence only:** the earlier continuation recorded expert parity against
 CUDA and CPU for four layers. Its handshake checked geometry rather than model content.
-Those measurements cannot supersede the new integrity failure.
+Those measurements cannot supersede the integrity failures. The 5 November parity
+run supplies new content-verified evidence at the expert level.
 
-**Not run after the gate failed:** real-worker numerical parity, full-model remote inference,
+**Still pending after the 5 November recheck:** full-model remote inference,
 zero-ownership token/logit identity, real GPU disconnect/timeout recovery, same-day paired
 throughput and capacity qualification, and GPU/CPU utilization analysis. The benchmark harness below has only passed a syntax check. Default-path token
 identity remains unverified. No SYCL, Windows or Metal build/runtime claim is made.
