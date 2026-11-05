@@ -31,6 +31,8 @@ struct NetworkExpertStats {
     uint64_t resident_experts = 0;
     uint64_t load_time_us = 0;
     uint64_t worker_vram_used_bytes = 0;
+    // Aligned with the timing rings below; summaries cover the last 4096 successful requests.
+    std::vector<uint64_t> layer_ids;
     std::vector<uint64_t> rtt_us;
     std::vector<uint64_t> wait_us;
     std::vector<uint64_t> worker_stage_us;

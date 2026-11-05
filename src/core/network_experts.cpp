@@ -300,6 +300,7 @@ bool NetworkExpertExecutor::wait_result(float *out_sums, uint8_t *out_mask, std:
     stats_.tx_bytes += 24 + tx_buf_.size();
     stats_.rx_bytes += 24 + rx_buf_.size();
     const uint64_t n = stats_.layers_dispatched;
+    sample(stats_.layer_ids, n, static_cast<uint64_t>(cur_layer_));
     sample(stats_.rtt_us, n, last_rtt_us_);
     sample(stats_.wait_us, n, us_since(t0));
     sample(stats_.worker_stage_us, n, rf.stage_us);
@@ -347,5 +348,27 @@ void NetworkExpertExecutor::print_summary(FILE *out) const {
     report("worker_copy", stats_.worker_copy_us);
     report("worker_total", stats_.worker_total_us);
     std::fprintf(out, "\n");
+    const std::set<uint64_t> layers(stats_.layer_ids.begin(), stats_.layer_ids.end());
+    for (const auto layer : layers) {
+        std::vector<uint64_t> wait, rtt, stage, kernel, copy, total;
+        for (size_t i = 0; i < stats_.layer_ids.size(); ++i) {
+            if (stats_.layer_ids[i] != layer) continue;
+            wait.push_back(stats_.wait_us[i]);
+            rtt.push_back(stats_.rtt_us[i]);
+            stage.push_back(stats_.worker_stage_us[i]);
+            kernel.push_back(stats_.worker_kernel_us[i]);
+            copy.push_back(stats_.worker_copy_us[i]);
+            total.push_back(stats_.worker_total_us[i]);
+        }
+        std::fprintf(out, "strata-network-layer: layer=%llu samples=%zu",
+                     (unsigned long long)layer, wait.size());
+        report("wait", wait);
+        report("rtt", rtt);
+        report("worker_stage", stage);
+        report("worker_kernel", kernel);
+        report("worker_copy", copy);
+        report("worker_total", total);
+        std::fprintf(out, "\n");
+    }
 }
 } // namespace strata::core

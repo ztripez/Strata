@@ -201,6 +201,18 @@ void executor_tests() {
         check(!net.install_plan(plan, err), "mutable plan accepted");
         valid_execution(net, 5);
         std::vector<float> acts(N, 1), out(N);
+        check(net.execute_sync(1, 1, acts.data(), {{0, 0, 5, 1}}, out.data(), nullptr, &err), err.c_str());
+        FILE *summary = std::tmpfile();
+        check(summary != nullptr, "summary tempfile");
+        net.print_summary(summary);
+        std::rewind(summary);
+        std::string report;
+        char line[2048];
+        while (std::fgets(line, sizeof(line), summary)) report += line;
+        check(!std::ferror(summary), "summary read");
+        std::fclose(summary);
+        check(report.find("layer=0 samples=5") != std::string::npos &&
+              report.find("layer=1 samples=1") != std::string::npos, "per-layer sample attribution");
         check(!net.begin_async(0, 1, acts.data(), {{0, 0, 99, 1}}), "nonresident accepted");
         check(!net.begin_async(0, 1, acts.data(), {{0, 0, 3, 1}, {0, 0, 3, 1}}), "duplicate slot accepted");
         check(!net.begin_async(0, 1, acts.data(), {{0, 8, 3, 1}}), "slot bound accepted");

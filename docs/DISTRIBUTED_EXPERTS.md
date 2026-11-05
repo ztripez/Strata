@@ -1,9 +1,55 @@
 # Network expert execution: experimental checkpoint
 
 This fork adds a Linux-only expert worker for **Qwen3.6 (`qwen35moe`) text decode**.
-It is off at build time and at run time. It is **not qualified for inference or a speedup**.
+It is off at build time and at run time. Full-model functional, zero-ownership, and
+fault-recovery checks have now passed on the Kingston-only configuration, while the
+tested 32-expert (61 MiB) placement remains a **correctness/integration checkpoint
+and does not yet provide a throughput or primary-RAM capacity gain**.
 
-## Current checkpoint: integrity and expert parity recheck passed
+## Current checkpoint: full-model functional, fault-recovery, and 6-case campaign completed
+
+Following the Kingston-only integrity and expert-parity recheck on 5 November 2026,
+full-model CLI logit comparisons and the 6-case `--serve` qualification campaign
+(`bench/distributed_experts.mjs`) were completed between `lucy` (`RTX 3080 10 GiB`,
+CUDA) and `astor` (`AMD Radeon RX 6800 16 GiB`, HIP, `192.168.63.177:19415` via
+`enp7s0` 1 GbE route) on the verified stock `Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf`
+(`55983c5a...`). Physical DIMM placement remains unconfirmed (SMBIOS reports A1/B1,
+two 32 GiB Kingston `KF3200C16D4/32GX` at 3200 MT/s; one Memtest86+ pass only).
+
+### 1. Full-logit CLI functional gate (32 greedy tokens, prompt 0, 248,320 vocab)
+
+All runs used `STRATA_Q8_PACKED=0 STRATA_Q36_NO_MMQ=1 --max-context 2048 --chunk 256 --mtp 0 --expert-slots 12`:
+
+- **Instrumentation control (`baseline` vs rebuilt `instrumented-baseline`):**
+  Byte-identical across all 32 rows (`unequal_floats = 0`, `max_abs = 0`, `relative_l2 = 0`, `token_mismatches = 0`).
+- **Zero remote ownership (`baseline` vs `zero` with `--expert-worker` and 0-expert plan):**
+  Byte-identical across all 32 rows (`unequal_floats = 0`, `max_abs = 0`, `relative_l2 = 0`, `token_mismatches = 0`, `remote_entries = 0`, `fallbacks = 0`).
+- **Remote 32-expert placement (`0-7` on layers `0, 1, 20, 39`, free-running `remote` vs `baseline`):**
+  All floats finite; `21` layers dispatched, `22` remote expert assignments executed, `0` fallbacks. Rows `0–2` are bit-identical (`max_abs = 0`) before any remote-owned expert is selected; rows `3–23` match every greedy top-1 token while small cross-path differences (`native_expert_grouped` Q8_1 on HIP vs local `ggml-cpu` Q8_K on primary CPU misses, plus primary slot-replacement divergence because remote hits do not run on the local CPU pool) accumulate to flip argmax at token `24` (`557` vs `995`), after which autoregressive continuation diverges for the remaining 8 tokens.
+- **Teacher-forced remote (`remote-forced` with `--force` of baseline tokens vs `baseline`):**
+  Conditioned on the identical prefix at every step (`19` layers dispatched, `20` remote entries, `0` fallbacks), all 32 rows remain finite with `relative_l2 = 0.0369`, `mean_kl = 0.00198`, `max_abs = 1.735`, and `31 / 32` top-1 tokens identical (only step 24 flips between near-tied logits `557` and `995` at step KL `0.00107`).
+
+### 2. Paired 6-case `--serve` campaign (3 prompts × 64 tokens × 3 repetitions)
+
+| Case | Exit | Warm decode tok/s (med / mean) | All decode tok/s (med / mean) | Warm TTFT ms (med) | CPU s/req (med) | Remote layers / entries / fallbacks | Token mismatches vs baseline (9 reqs) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `baseline` | 0 | 49.56 / 48.90 | 48.94 / 48.78 | 212.6 | 17.63 | — | — |
+| `zero` (0 remote experts) | 0 | 46.88 / 46.64 | 46.64 / 47.00 | 219.9 | 17.94 | 0 / 0 / 0 | **0 / 9** (all 576 tokens identical) |
+| `remote` (32 remote experts) | 0 | 47.91 / 48.07 | 47.80 / 48.30 | 210.9 | 18.13 | 356 / 398 / 0 | 0 on prompts 1–2 (warm); prompt 0 & rep 0 prompt 1 diverge as above |
+| `disconnect` (cut after 3 results) | 0 | 47.77 / 47.43 | 47.33 / 47.29 | 213.9 | 18.00 | 3 / 3 / 1 | Fallback on layer 39; all 9 requests complete cleanly |
+| `timeout` (hold 1st `EXECUTE`, 5 s) | 0 | 49.99 / 49.84 | 49.64 / 45.19 | 207.1 | 17.53 | 0 / 0 / 1 | **0 / 9** (all 576 tokens identical after local recompute) |
+| `unavailable` (closed port) | 1 | — | — | — | — | setup refused | Exits non-zero before `READY` (`Connection refused`) |
+
+- **Per-layer network telemetry (`remote`, 356 dispatches, 398 assignments, 2.94 MB TX / 2.95 MB RX):**
+  Overall `rtt_us` p50/p95/p99 = `426 / 699 / 804 us`, `wait_us` p50/p95/p99 = `151 / 447 / 550 us`, `worker_stage_us` p50 = `33 us`, `worker_kernel_us` p50 = `80 us`, `worker_copy_us` p50 = `21 us`, `worker_total_us` p50 = `193 us` (`layer 0`: 115 samples, wait p50 `144 us`; `layer 1`: 97 samples, wait p50 `181 us`; `layer 20`: 48 samples, wait p50 `248 us`; `layer 39`: 96 samples, wait p50 `83 us`).
+- **GPU utilization (`100 ms` sampling) & post-run model integrity:**
+  Primary RTX 3080 averaged `18.2%` busy (`9,087 MiB` peak VRAM) during `remote` vs `23.0%` (`9,144 MiB`) in `baseline`; worker RX 6800 averaged `16.1%` busy (`42%` max, `2,295.2 MiB` VRAM). Post-campaign full-file `sha256sum` of `/home/ztripez/models/qwen36/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf` matched stock (`55983c5a...`) with unchanged `stat` metadata.
+- **Why this 32-expert placement is not a speedup:**
+  32 experts across 4 layers cover only `398` of `275,520` routed entries (`0.14%`), while enabling `--expert-worker` copies `h_ewts` per hybrid layer and waits ~`65 ms` across 356 dispatches over the 1 GbE default route (`47.91` vs `49.56 tok/s` warm median). Qualifying a throughput or capacity gain requires a large multi-layer placement (e.g., thousands of experts in the worker's 15.8 GiB free VRAM over the 10 GbE route) and/or stripping remote-owned experts from primary host RAM.
+
+All campaign artifacts, logit dumps, GPU utilization traces, and `evidence-manifest.sha256` are saved in `/var/tmp/strata-full-decode-20261105-urobIt/` on `lucy` and mirrored under `/var/tmp/strata-full-decode-20261105-urobIt/primary-evidence/` on `astor`.
+
+## Earlier checkpoint (5 November 2026): integrity and expert parity recheck passed
 
 On 5 November 2026, the user reported a Memtest failure with the Corsair kit and
 returned Lucy to Linux with only the Kingston pair. The supplied Kingston-only
@@ -38,12 +84,7 @@ The one-session test worker exited normally.
 
 Evidence is in `/var/tmp/strata-kingston-recheck-20261105-UfoqQI/`. A separate copy
 on Astor under that directory's `primary-evidence/` passed the full evidence
-checksum manifest.
-This clears the integrity and expert-level parity prerequisite for continuing
-development on this configuration. Full-model distributed inference, zero-ownership
-token/logit identity, inference-time worker recovery and paired throughput/capacity
-qualification remain pending. This bounded recheck is not a long-duration memory
-stability result. All earlier failure evidence remains retained below.
+checksum manifest. All earlier failure evidence remains retained below.
 
 ## Historical model integrity failure, 4 November 2026
 
@@ -391,32 +432,43 @@ loading a larger plan exceeds the deadline; the maximum is 600,000 ms.
 
 ## Validation and remaining work
 
-**Passed:** the 5 November Kingston-only full-hash and targeted-read recheck and
-all 11 real-worker expert parity comparisons described above. Earlier validation
+**Passed:** the 5 November Kingston-only full-hash and targeted-read recheck; all 11
+real-worker expert parity comparisons; full-model 32-token CLI logit identity for
+rebuilt instrumentation and zero-ownership; teacher-forced 32-token full-logit bounded
+comparison (`relative_l2 = 0.0369`, `mean_kl = 0.00198`, `31 / 32` top-1 match); and
+the 6-case `--serve` campaign (`baseline`, `zero`, `remote`, `disconnect`, `timeout`,
+`unavailable`) with per-layer telemetry and GPU/CPU utilization tracking. Earlier validation
 passed CUDA and HIP builds and GPU-free protocol/executor tests
 on both hosts; address/undefined-behavior sanitizer tests; a 1,000-request CPU-mock run
 over both the initial 1 Gb/s route and the later 10 Gb/s path. Tests cover golden wire bytes, sparse and repeated activation
 rows, zero ownership, invalid placement, concurrent request rejection, reconnect, bad
 model identity, stale IDs, incomplete READY, incorrect result coverage, nonfinite results,
-disconnect and whole-frame/request deadlines. Failed results leave caller buffers unchanged.
+disconnect, whole-frame/request deadlines, and per-layer sample attribution. Failed results leave caller buffers unchanged.
 
 **Retained earlier failures:** the real CUDA-primary/HIP-worker parity handshake rejected different model
-content hashes. The default-settings pre-integration CUDA run also ran out of memory.
+content hashes when the Corsair DIMMs were installed. The default-settings pre-integration CUDA run also ran out of memory.
 Both failures are retained. The pre-integration binary completed a narrower run after
 using the explicit fit settings, but that is not a valid paired performance comparison.
 
 **Historical evidence only:** the earlier continuation recorded expert parity against
 CUDA and CPU for four layers. Its handshake checked geometry rather than model content.
 Those measurements cannot supersede the integrity failures. The 5 November parity
-run supplies new content-verified evidence at the expert level.
+and full-decode campaign runs supply new content-verified evidence.
 
-**Still pending after the 5 November recheck:** full-model remote inference,
-zero-ownership token/logit identity, real GPU disconnect/timeout recovery, same-day paired
-throughput and capacity qualification, and GPU/CPU utilization analysis. The benchmark harness below has only passed a syntax check. Default-path token
-identity remains unverified. No SYCL, Windows or Metal build/runtime claim is made.
+**Still open for speedup/capacity qualification:** the 32-expert (61 MiB) placement
+tested in `/var/tmp/strata-full-decode-20261105-urobIt/` verified end-to-end correctness,
+zero-ownership identity, and fault recovery, but does not beat the local CPU pool on
+decode tok/s (`47.91` vs `49.56 tok/s` warm median) or reduce primary host RAM because
+every expert remains pinned in primary RAM for fallback. Qualifying a speedup or capacity
+benefit requires a large multi-layer placement (e.g., thousands of experts on the worker
+over the 10 Gb/s route) and/or omitting remote-owned experts from primary RAM when fallback
+is not required. Physical DIMM slot placement on `lucy` (`A1/B1` in SMBIOS vs `A2/B2`) and
+long-duration memory stability testing also remain open. No SYCL, Windows or Metal
+build/runtime claim is made.
 
 The repeatable harness records raw engine output, token IDs, per-token arrival times,
-prefill/decode rates, time to first token, startup time, worker counters, JSON and CSV:
+CPU clock ticks, prefill/decode rates, time to first token, startup time, worker and
+per-layer counters, JSON and CSV:
 
 ```sh
 node bench/distributed_experts.mjs \
@@ -427,12 +479,8 @@ node bench/distributed_experts.mjs \
 
 It runs baseline, empty-plan, real-worker, disconnection, withheld-response and unavailable
 cases sequentially, with three repetitions of three repository prompts. A local test relay
-injects the two runtime failures; it does not stop a user service. Keep the real worker
+injects the two runtime failures after `READY`; it does not stop a user service. Keep the real worker
 running for those sessions. The harness refuses to overwrite an evidence directory.
 Only the direct remote case is suitable for performance comparison; fault relays are
 correctness probes. The unavailable case must fail setup. Zero ownership must preserve
 tokens. Remote token deviations are recorded and need separate numerical/quality review.
-
-The success gate is still open: stable stock model identity, declared numerical tolerances,
-correct complete inference, bounded real-worker failure handling, and a measured useful
-throughput or capacity benefit. No threshold was relaxed to pass the failed integrity gate.
