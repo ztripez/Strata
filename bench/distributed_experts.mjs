@@ -12,10 +12,10 @@ import { finished } from 'node:stream/promises';
 import { performance } from 'node:perf_hooks';
 
 const opt = { cases: 'baseline,zero,remote,disconnect,timeout,unavailable', repeats: '3', tokens: '64', timeout: '5000',
-  prompts: 'tools/qwen35/parity_prompts.ids', 'prompt-count': '3', 'disconnect-after': '30' };
+  prompts: 'tools/qwen35/parity_prompts.ids', 'prompt-count': '3', 'disconnect-after': '30', 'extra-args': '' };
 for (let i = 2; i < process.argv.length; i += 2) {
   const key = process.argv[i].replace(/^--/, '');
-  if (!process.argv[i].startsWith('--') || !process.argv[i + 1]) throw new Error('Expected --key value');
+  if (!process.argv[i].startsWith('--') || process.argv[i + 1] === undefined) throw new Error('Expected --key value');
   opt[key] = process.argv[i + 1];
 }
 for (const key of ['engine', 'model', 'out', 'worker', 'placement']) if (!opt[key]) throw new Error(`--${key} is required`);
@@ -30,7 +30,8 @@ const prompts = readFileSync(opt.prompts, 'utf8').trim().split(/\r?\n/).slice(0,
   return line.split(',').map(Number);
 });
 const zero = join(dir,'zero-placement.txt'); writeFileSync(zero, '# zero ownership\n');
-const base = ['--model', resolve(opt.model), '--max-context', '2048', '--chunk', '256', '--mtp', '0', '--expert-slots', '12', '--serve'];
+const extraArgs = opt['extra-args'].trim() ? opt['extra-args'].trim().split(/\s+/) : [];
+const base = ['--model', resolve(opt.model), '--max-context', '2048', '--chunk', '256', '--mtp', '0', '--expert-slots', '12', ...extraArgs, '--serve'];
 const env = { ...process.env, STRATA_Q8_PACKED: '0', STRATA_Q36_NO_MMQ: '1' };
 const result = { revision: execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim(),
   source_diff: execFileSync('git',['diff'],{encoding:'utf8'}), started_at: new Date().toISOString(),
@@ -145,6 +146,7 @@ try {
       record.worker_summaries=text.split('\n').filter(s=>s.startsWith('strata-network-worker:'));
       record.layer_summaries=text.split('\n').filter(s=>s.startsWith('strata-network-layer:'));
       record.hybrid_summaries=text.split('\n').filter(s=>s.includes('hybrid experts:')||s.includes('network entries'));
+      record.memory_summaries=text.split('\n').filter(s=>s.startsWith('strata-q36: memory residency:'));
       if(['disconnect','timeout'].includes(mode) && !/falling back to local CPU/.test(text)) throw new Error('Fault case did not report local recomputation');
       if(relay && !record.fault.triggered)throw new Error('Fault was not injected during inference');
       if(mode==='remote' && !/remote_entries=[1-9]/.test(text))throw new Error('No real remote work was acknowledged');

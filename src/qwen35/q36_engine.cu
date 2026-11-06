@@ -52,17 +52,24 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <fstream>
 #include <functional>
 #include <iostream>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <random>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <tuple>
 #include <type_traits>
 #include <vector>
+#if defined(__linux__)
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <unistd.h>
+#endif
 
 namespace {
 
@@ -1238,18 +1245,27 @@ struct Engine {
     // ---- the hybrid mode (Model::hybrid): per state index (the layers, then the MTP block) the slot tables; a
     // batch of up to hybrid_t rows runs its VRAM-resident experts on the GPU and the others on the CPU pool, side by
     // side; a bigger prompt chunk streams each layer's experts into a staging buffer for MMQ (two, double-buffered)
+    enum class ExpertStorageMode { Default, MmapExperts, ResidentExperts, ResidentBudget };
     struct Hy {
         std::vector<int> slot_of, exp_in_slot;
         std::vector<double> score;   // routing counts, halved at each rebalance
         int32_t* slot_of_d = nullptr;
+        std::vector<uint8_t*> hblob_of;   // per expert: non-null when resident in host RAM arena
 #if defined(STRATA_Q36_CPU_POOL)
         strata::kernels::cpu::NativeFmt fmt;
+        std::vector<strata::kernels::cpu::NativeFmt> zc_fmt;   // per expert: zero-copy GGUF layout (src_g, src_u, src_d)
 #endif
     };
     std::vector<Hy> hy;
+    ExpertStorageMode storage_mode = ExpertStorageMode::Default;
+    double resident_budget_gib = -1.0;
+    uint8_t* arena = nullptr;
+    uint8_t* h_swap = nullptr;
+    size_t arena_bytes = 0, arena_experts = 0;
+    bool arena_pinned = false;
     int hybrid_t = 32;
     bool main_hybrid = false;   // some main layer is hybrid (else only the MTP block is: the decode graph stays)
-    bool mtp_graph = true;      // the MTP draft step may be a graph (not when its layer is hybrid)
+    bool mtp_graph = true;      // the MTP block's draft step may be a graph (not when its layer is hybrid)
     /// state index li's layer runs hybrid (its experts not all in VRAM)
     bool lhy(size_t li) const {
         if (!m->hybrid) return false;
@@ -1269,13 +1285,13 @@ struct Engine {
     cudaEvent_t ev_copy[2] = {}, ev_used[2] = {};
     std::vector<int> stream_seq;   // the state indices a streamed forward visits, in order
     int stream_pos = 0;
-    long long hy_cpu = 0, hy_gpu = 0, hy_swaps = 0;   // entries computed on the CPU / GPU, slot replacements
+    long long hy_cpu = 0, hy_gpu = 0, hy_swaps = 0, hy_mmap_reads = 0;   // entries computed on the CPU / GPU, slot replacements, mmap reads
     double hy_cpu_ms = 0;
 #if defined(STRATA_NETWORK_EXPERTS)
     std::unique_ptr<strata::core::NetworkExpertExecutor> net_worker;
     float *h_ewts = nullptr, *d_rsum = nullptr;
     std::vector<float> net_sums;
-    uint8_t net_mask = 0;
+    std::vector<uint8_t> net_mask;
     bool net_decode = false, net_warned = false, trace_decode = false;
     long long hy_remote = 0;
     double hy_remote_wait_ms = 0;
@@ -2180,6 +2196,55 @@ struct Engine {
     // ---- the hybrid mode
     const Layer& layer_at(int li) const { return li < (int) m->layers.size() ? m->layers[(size_t) li] : m->mtp; }
 
+    /// Copy expert e of layer L (at state index li) to device destination `dst` on stream `s`, reading from its VRAM
+    /// slot if resident, from its host RAM arena slot if resident, or from the mapped GGUF slices (src_g, src_u, src_d).
+    void copy_expert_to_device(const Layer& L, const Hy& H, int e, uint8_t* dst, cudaStream_t s) {
+        if (H.slot_of[(size_t) e] >= 0) {
+            CK(cudaMemcpyAsync(dst, L.blobs + (size_t) H.slot_of[(size_t) e] * L.stride, L.L.bytes,
+                               cudaMemcpyDeviceToDevice, s));
+        } else if (H.hblob_of[(size_t) e] != nullptr) {
+            CK(cudaMemcpyAsync(dst, H.hblob_of[(size_t) e], L.L.bytes, cudaMemcpyHostToDevice, s));
+        } else {
+            CK(cudaMemcpyAsync(dst, L.src_g + (size_t) e * L.src_gsz, L.src_gsz, cudaMemcpyHostToDevice, s));
+            CK(cudaMemcpyAsync(dst + L.L.up_off, L.src_u + (size_t) e * L.src_gsz, L.src_gsz, cudaMemcpyHostToDevice, s));
+            CK(cudaMemcpyAsync(dst + L.L.down_off, L.src_d + (size_t) e * L.src_dsz, L.src_dsz, cudaMemcpyHostToDevice, s));
+        }
+    }
+
+#if !defined(_WIN32)
+    static void evict_gguf_range(const uint8_t* base, size_t file_size, int fd, const uint8_t* p, size_t len) {
+        if (!p || len == 0) return;
+        const size_t ps = (size_t) sysconf(_SC_PAGESIZE);
+        const uintptr_t u0 = (uintptr_t) p & ~(uintptr_t) (ps - 1);
+        const uintptr_t u1 = ((uintptr_t) p + len + ps - 1) & ~(uintptr_t) (ps - 1);
+        if (u1 <= u0) return;
+        // First unmap PTEs from the process address space so page_mapped(page) becomes false
+        (void) madvise((void*) u0, u1 - u0, MADV_DONTNEED);
+        // Second evict unmapped clean pages from the Linux kernel page cache
+        if (fd >= 0 && base != nullptr && u0 >= (uintptr_t) base && u1 <= (uintptr_t) base + file_size) {
+            const off_t off = (off_t) (u0 - (uintptr_t) base);
+            (void) posix_fadvise(fd, off, (off_t) (u1 - u0), POSIX_FADV_DONTNEED);
+        }
+    }
+#endif
+
+    /// Evict all mapped GGUF pages from both the process's page tables (RSS / Pss_File) and the Linux kernel page cache
+    /// (mincore), called after model SHA-256 + place_experts() and after warmup() in low-RAM storage modes.
+    void evict_all_gguf_pages() {
+#if !defined(_WIN32)
+        if (storage_mode == ExpertStorageMode::Default || !m || !m->file) return;
+        for (size_t s = 0; s < m->file->size(); ++s) {
+            const auto& sh = m->file->shard(s);
+            const uint8_t* base = sh.file_data();
+            const size_t sz = sh.file_size();
+            if (!base || sz == 0) continue;
+            int fd = ::open(sh.path().c_str(), O_RDONLY | O_CLOEXEC);
+            evict_gguf_range(base, sz, fd, base, sz);
+            if (fd >= 0) ::close(fd);
+        }
+#endif
+    }
+
     /// A streamed forward over the state indices `seq`: the first two layers' experts start copying now.
     void stream_begin(const std::vector<int>& seq) {
         stream_seq = seq;
@@ -2196,26 +2261,48 @@ struct Engine {
         static const bool all = std::getenv("STRATA_Q36_STREAM_ALL") != nullptr;
         const int ne = (int) m->g.n_expert;
         const Hy& H = hy[(size_t) stream_seq[(size_t) i]];
-        // fewer than half the experts resident (a 12 GB card): the one whole-layer copy is faster than many small ones
-        // (RTX 3060, UD-Q4_K_XL at 37 of 256: pp2048 1970 whole vs 1540 in runs)
-        if (all || 2 * L.n_slots < ne) {
-            CK(cudaMemcpyAsync(stage[b], L.hblobs, L.stride * (size_t) ne, cudaMemcpyHostToDevice, cst));
+        if (L.hblobs != nullptr) {
+            // fewer than half the experts resident (a 12 GB card): the one whole-layer copy is faster than many small ones
+            // (RTX 3060, UD-Q4_K_XL at 37 of 256: pp2048 1970 whole vs 1540 in runs)
+            if (all || 2 * L.n_slots < ne) {
+                CK(cudaMemcpyAsync(stage[b], L.hblobs, L.stride * (size_t) ne, cudaMemcpyHostToDevice, cst));
+            } else {
+                for (int x = 0; x < ne;) {
+                    const bool dev = H.slot_of[(size_t) x] >= 0;
+                    int y = x + 1;
+                    if (dev)   // consecutive slots holding consecutive experts
+                        while (y < ne && H.slot_of[(size_t) y] == H.slot_of[(size_t) y - 1] + 1) ++y;
+                    else
+                        while (y < ne && H.slot_of[(size_t) y] < 0) ++y;
+                    const size_t n = (size_t) (y - x) * L.stride;
+                    if (dev)
+                        CK(cudaMemcpyAsync(stage[b] + (size_t) x * L.stride, L.blobs + (size_t) H.slot_of[(size_t) x] * L.stride,
+                                           n, cudaMemcpyDeviceToDevice, cst));
+                    else
+                        CK(cudaMemcpyAsync(stage[b] + (size_t) x * L.stride, L.hblobs + (size_t) x * L.stride, n,
+                                           cudaMemcpyHostToDevice, cst));
+                    x = y;
+                }
+            }
         } else {
             for (int x = 0; x < ne;) {
-                const bool dev = H.slot_of[(size_t) x] >= 0;
-                int y = x + 1;
-                if (dev)   // consecutive slots holding consecutive experts
+                if (H.slot_of[(size_t) x] >= 0) {
+                    int y = x + 1;
                     while (y < ne && H.slot_of[(size_t) y] == H.slot_of[(size_t) y - 1] + 1) ++y;
-                else
-                    while (y < ne && H.slot_of[(size_t) y] < 0) ++y;
-                const size_t n = (size_t) (y - x) * L.stride;
-                if (dev)
                     CK(cudaMemcpyAsync(stage[b] + (size_t) x * L.stride, L.blobs + (size_t) H.slot_of[(size_t) x] * L.stride,
-                                       n, cudaMemcpyDeviceToDevice, cst));
-                else
-                    CK(cudaMemcpyAsync(stage[b] + (size_t) x * L.stride, L.hblobs + (size_t) x * L.stride, n,
-                                       cudaMemcpyHostToDevice, cst));
-                x = y;
+                                       (size_t) (y - x) * L.stride, cudaMemcpyDeviceToDevice, cst));
+                    x = y;
+                } else if (H.hblob_of[(size_t) x] != nullptr) {
+                    int y = x + 1;
+                    while (y < ne && H.slot_of[(size_t) y] < 0 &&
+                           H.hblob_of[(size_t) y] == H.hblob_of[(size_t) y - 1] + L.stride) ++y;
+                    CK(cudaMemcpyAsync(stage[b] + (size_t) x * L.stride, H.hblob_of[(size_t) x],
+                                       (size_t) (y - x) * L.stride, cudaMemcpyHostToDevice, cst));
+                    x = y;
+                } else {
+                    copy_expert_to_device(L, H, x, stage[b] + (size_t) x * L.stride, cst);
+                    ++x;
+                }
             }
         }
         CK(cudaEventRecord(ev_copy[b], cst));
@@ -2236,6 +2323,19 @@ struct Engine {
         ++stream_pos;
     }
 
+    /// True when hybrid MoE layer `li` should dispatch remote-owned misses to `net_worker`: always during single-token
+    /// decode, and also during multi-token hybrid prefill in low-RAM storage modes when remote experts have no local
+    /// host RAM copy (avoiding GGUF page faults for remote-owned layers).
+    bool use_net_layer(size_t li) const {
+#if defined(STRATA_NETWORK_EXPERTS)
+        if (warming || !net_worker || li >= m->layers.size() || !net_worker->holds_layer((int32_t) li)) return false;
+        return net_decode || storage_mode != ExpertStorageMode::Default;
+#else
+        (void) li;
+        return false;
+#endif
+    }
+
     /// The GPU half of a hybrid MoE: the routing to the host, the resident experts' entries grouped and run.
     void moe_hybrid_gpu(const Layer& L, size_t li, int T) {
         const auto& g = m->g;
@@ -2243,7 +2343,7 @@ struct Engine {
         const int64_t n_ent = (int64_t) T * Kp;
         CK(cudaMemcpyAsync(h_ids, ids, (size_t) n_ent * 4, cudaMemcpyDeviceToHost, st));
 #if defined(STRATA_NETWORK_EXPERTS)
-        if (net_decode && net_worker && net_worker->holds_layer((int32_t) li))
+        if (use_net_layer(li))
             CK(cudaMemcpyAsync(h_ewts, ewts, (size_t) n_ent * 4, cudaMemcpyDeviceToHost, st));
 #endif
         CK(cudaMemcpyAsync(h_h, h, (size_t) T * N * 4, cudaMemcpyDeviceToHost, st));
@@ -2257,7 +2357,7 @@ struct Engine {
     /// rows uploaded and merged into the entries' rows.
     void moe_hybrid_cpu(size_t li, int T) {
 #if defined(STRATA_NETWORK_EXPERTS)
-        if (net_decode && net_worker && net_worker->holds_layer((int32_t) li)) { moe_network_cpu(li, T); return; }
+        if (use_net_layer(li)) { moe_network_cpu(li, T); return; }
 #endif
 #if defined(STRATA_Q36_CPU_POOL)
         namespace C = strata::kernels::cpu;
@@ -2300,7 +2400,14 @@ struct Engine {
             auto it = open.find(x);
             if (it == open.end() || jobs[it->second].nt == C::MAXT) {
                 C::ExpertJobMulti j;
-                j.blob = L.hblobs + (size_t) x * L.stride;
+                if (H.hblob_of[(size_t) x] != nullptr) {
+                    j.blob = H.hblob_of[(size_t) x];
+                    j.fmt = nullptr;
+                } else {
+                    j.blob = L.src_g + (size_t) x * L.src_gsz;
+                    j.fmt = &H.zc_fmt[(size_t) x];
+                    if (!warming) ++hy_mmap_reads;
+                }
                 jobs.push_back(j);
                 it = open.insert_or_assign(x, jobs.size() - 1).first;
             }
@@ -2358,7 +2465,14 @@ struct Engine {
             auto it = open.find(x);
             if (it == open.end() || jobs[it->second].nt == C::MAXT) {
                 C::ExpertJobMulti j;
-                j.blob = L.hblobs + (size_t) x * L.stride;
+                if (H.hblob_of[(size_t) x] != nullptr) {
+                    j.blob = H.hblob_of[(size_t) x];
+                    j.fmt = nullptr;
+                } else {
+                    j.blob = L.src_g + (size_t) x * L.src_gsz;
+                    j.fmt = &H.zc_fmt[(size_t) x];
+                    if (!warming) ++hy_mmap_reads;
+                }
                 jobs.push_back(j);
                 it = open.insert_or_assign(x, jobs.size() - 1).first;
             }
@@ -2378,7 +2492,7 @@ struct Engine {
             }
             if (!h_miss[e]) continue;
             ++n_miss;
-            if (use_net && net_worker->holds((int32_t) li, x)) {
+            if (use_net && (net_decode || H.hblob_of[(size_t) x] == nullptr) && net_worker->holds((int32_t) li, x)) {
                 remote_assigns.push_back({
                     static_cast<uint16_t>(e / Kp),
                     static_cast<uint16_t>(e % Kp),
@@ -2395,17 +2509,17 @@ struct Engine {
         hy_gpu += n_ent - n_miss;
         if (n_miss == 0) return;
 
-        // Dispatch remote-owned assignments asynchronously BEFORE running local CPU pool so network RTT + remote GPU
-        // execution overlap with local CPU pool execution and primary GPU shared-expert execution.
-        bool net_dispatched = false;
-        if (!remote_assigns.empty()) {
-            net_dispatched = net_worker->begin_async((int32_t) li, (uint32_t) T, h_h, remote_assigns);
+        const int max_wt = std::max(1, (int) net_worker->caps().max_tokens);
+        bool remote_ok = false;
+        if (!remote_assigns.empty() && T <= max_wt) {
+            // Single-slice fast path: dispatch asynchronously BEFORE running local CPU pool so network RTT + remote GPU
+            // execution overlap with local CPU pool execution and primary GPU shared-expert execution.
+            bool net_dispatched = net_worker->begin_async((int32_t) li, (uint32_t) T, h_h, remote_assigns);
             if (!net_dispatched) {
                 if (!net_warned) {
                     std::fprintf(stderr, "strata-q36: remote expert dispatch failed; recomputing on the local CPU pool\n");
                     net_warned = true;
                 }
-                // Immediate fallback before pool runs
                 for (const auto& a : remote_assigns) {
                     const int e = (int) a.token_idx * Kp + (int) a.slot_idx;
                     ++n_cpu;
@@ -2413,42 +2527,101 @@ struct Engine {
                 }
                 remote_assigns.clear();
             }
-        }
-
-        if (!jobs.empty()) {
-            const auto tc0 = Clock::now();
-            pool->run_split_multi_native(H.fmt, jobs.data(), (int) jobs.size());
-            hy_cpu_ms += ms_since(tc0);
-        }
-
-        bool remote_ok = false;
-        if (net_dispatched) {
-            const auto tw0 = Clock::now();
-            std::string net_err;
-            remote_ok = net_worker->wait_result(net_sums.data(), &net_mask, &net_err);
-            hy_remote_wait_ms += ms_since(tw0);
-            if (remote_ok) {
-                hy_remote += (long long) remote_assigns.size();
-            } else {
-                if (!net_warned) {
-                    std::fprintf(stderr, "strata-q36: warning: remote expert worker failed on layer %zu (%s); "
-                                 "falling back to local CPU expert pool for remaining execution\n", li, net_err.c_str());
-                    net_warned = true;
+            if (!jobs.empty()) {
+                const auto tc0 = Clock::now();
+                pool->run_split_multi_native(H.fmt, jobs.data(), (int) jobs.size());
+                hy_cpu_ms += ms_since(tc0);
+            }
+            if (net_dispatched) {
+                const auto tw0 = Clock::now();
+                std::string net_err;
+                remote_ok = net_worker->wait_result(net_sums.data(), net_mask.data(), &net_err);
+                hy_remote_wait_ms += ms_since(tw0);
+                if (remote_ok) {
+                    hy_remote += (long long) remote_assigns.size();
+                } else {
+                    if (!net_warned) {
+                        std::fprintf(stderr, "strata-q36: warning: remote expert worker failed on layer %zu (%s); "
+                                     "falling back to local CPU expert pool for remaining execution\n", li, net_err.c_str());
+                        net_warned = true;
+                    }
+                    const auto tf0 = Clock::now();
+                    jobs.clear();
+                    open.clear();
+                    for (const auto& a : remote_assigns) {
+                        const int e = (int) a.token_idx * Kp + (int) a.slot_idx;
+                        ++n_cpu;
+                        add_cpu_job(e, a.expert_id);
+                    }
+                    if (!jobs.empty()) {
+                        pool->run_split_multi_native(H.fmt, jobs.data(), (int) jobs.size());
+                    }
+                    hy_cpu_ms += ms_since(tf0);
                 }
-                // Recompute failed remote assignments locally on CPU pool before releasing the layer
+            }
+        } else if (!remote_assigns.empty()) {
+            // Multi-token prefill batch (T > max_wt): slice into sub-batches of <= max_wt tokens.
+            if (!jobs.empty()) {
+                const auto tc0 = Clock::now();
+                pool->run_split_multi_native(H.fmt, jobs.data(), (int) jobs.size());
+                hy_cpu_ms += ms_since(tc0);
+            }
+            std::fill(net_sums.begin(), net_sums.begin() + (size_t) T * N, 0.0f);
+            bool all_ok = true;
+            int failed_from_t0 = 0;
+            std::vector<strata::core::ExpertWorkerAssignment> sub_assigns;
+            for (int t0 = 0; t0 < T; t0 += max_wt) {
+                const int sub_t = std::min(max_wt, T - t0);
+                sub_assigns.clear();
+                for (const auto& a : remote_assigns) {
+                    if ((int) a.token_idx >= t0 && (int) a.token_idx < t0 + sub_t) {
+                        auto sa = a;
+                        sa.token_idx = static_cast<uint16_t>((int) a.token_idx - t0);
+                        sub_assigns.push_back(sa);
+                    }
+                }
+                if (sub_assigns.empty()) continue;
+                const auto tw0 = Clock::now();
+                std::string net_err;
+                bool ok = net_worker->execute_sync((int32_t) li, (uint32_t) sub_t, h_h + (size_t) t0 * N,
+                                                   sub_assigns, net_sums.data() + (size_t) t0 * N,
+                                                   net_mask.data() + t0, &net_err);
+                hy_remote_wait_ms += ms_since(tw0);
+                if (ok) {
+                    hy_remote += (long long) sub_assigns.size();
+                } else {
+                    if (!net_warned) {
+                        std::fprintf(stderr, "strata-q36: warning: remote expert worker failed on layer %zu (%s); "
+                                     "falling back to local CPU expert pool for remaining execution\n", li, net_err.c_str());
+                        net_warned = true;
+                    }
+                    all_ok = false;
+                    failed_from_t0 = t0;
+                    break;
+                }
+            }
+            remote_ok = true;
+            if (!all_ok) {
                 const auto tf0 = Clock::now();
                 jobs.clear();
                 open.clear();
                 for (const auto& a : remote_assigns) {
-                    const int e = (int) a.token_idx * Kp + (int) a.slot_idx;
-                    ++n_cpu;
-                    add_cpu_job(e, a.expert_id);
+                    if ((int) a.token_idx >= failed_from_t0) {
+                        const int e = (int) a.token_idx * Kp + (int) a.slot_idx;
+                        ++n_cpu;
+                        add_cpu_job(e, a.expert_id);
+                    }
                 }
                 if (!jobs.empty()) {
                     pool->run_split_multi_native(H.fmt, jobs.data(), (int) jobs.size());
                 }
                 hy_cpu_ms += ms_since(tf0);
+                if (failed_from_t0 == 0) remote_ok = false;
             }
+        } else if (!jobs.empty()) {
+            const auto tc0 = Clock::now();
+            pool->run_split_multi_native(H.fmt, jobs.data(), (int) jobs.size());
+            hy_cpu_ms += ms_since(tc0);
         }
         hy_cpu += n_cpu;
         CK(cudaMemcpyAsync(ecpu, cpu_out, (size_t) n_ent * N * 4, cudaMemcpyHostToDevice, st));
@@ -2491,6 +2664,11 @@ struct Engine {
             for (int i = 0; i < S && left > 0; ++i) {
                 const int x = order[(size_t) i];
                 if (H.slot_of[(size_t) x] >= 0) continue;
+#if defined(STRATA_NETWORK_EXPERTS)
+                // Do not spend primary GPU swap budget on remote-owned experts while the remote worker is healthy
+                if (net_worker && net_worker->healthy() && li < m->layers.size() && net_worker->holds((int32_t) li, x))
+                    continue;
+#endif
                 while (vi < victims.size()) {
                     const int s = victims[vi];
                     const int y = H.exp_in_slot[(size_t) s];
@@ -2500,8 +2678,23 @@ struct Engine {
                     H.slot_of[(size_t) y] = -1;
                     H.slot_of[(size_t) x] = s;
                     H.exp_in_slot[(size_t) s] = x;
-                    CK(cudaMemcpyAsync(L.blobs + (size_t) s * L.stride, L.hblobs + (size_t) x * L.stride, L.L.bytes,
-                                       cudaMemcpyHostToDevice, st));
+                    if (L.hblobs != nullptr) {
+                        CK(cudaMemcpyAsync(L.blobs + (size_t) s * L.stride, L.hblobs + (size_t) x * L.stride, L.L.bytes,
+                                           cudaMemcpyHostToDevice, st));
+                    } else if (H.hblob_of[(size_t) x] != nullptr && H.hblob_of[(size_t) y] == nullptr) {
+                        // Swap between GPU slot s (holding y) and x's host RAM arena slot so y remains in RAM
+                        uint8_t* arena_slot = H.hblob_of[(size_t) x];
+                        CK(cudaMemcpyAsync(h_swap, L.blobs + (size_t) s * L.stride, L.L.bytes,
+                                           cudaMemcpyDeviceToHost, st));
+                        CK(cudaMemcpyAsync(L.blobs + (size_t) s * L.stride, arena_slot, L.L.bytes,
+                                           cudaMemcpyHostToDevice, st));
+                        CK(cudaStreamSynchronize(st));
+                        std::memcpy(arena_slot, h_swap, L.L.bytes);
+                        H.hblob_of[(size_t) y] = arena_slot;
+                        H.hblob_of[(size_t) x] = nullptr;
+                    } else {
+                        copy_expert_to_device(L, H, x, L.blobs + (size_t) s * L.stride, st);
+                    }
                     --left;
                     ++hy_swaps;
                     changed = true;
@@ -2953,9 +3146,10 @@ struct Engine {
         CK(cudaStreamSynchronize(st));
         warming = false;
         for (Hy& H : hy) std::fill(H.score.begin(), H.score.end(), 0.0);
-        hy_cpu = hy_gpu = hy_swaps = 0;
+        hy_cpu = hy_gpu = hy_swaps = hy_mmap_reads = 0;
         hy_cpu_ms = 0;
         reset();
+        evict_all_gguf_pages();
         std::fprintf(stderr, "strata-q36: warmed up in %.1f s (one prompt chunk, a decode step%s)\n",
                      ms_since(t0) / 1000.0, mtp_d > 0 ? ", a speculative step" : "");
     }
@@ -2983,11 +3177,12 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
     std::vector<Layer*> all;
     for (Layer& L : m.layers) all.push_back(&L);
     if (m.has_mtp) all.push_back(&m.mtp);
-    size_t total = 0, per_slot = 0, max_layer = 0;
+    size_t total = 0, per_slot = 0, max_layer = 0, max_expert_bytes = 0;
     for (Layer* L : all) {
         total += L->stride * (size_t) ne + kMmqTail;
         per_slot += L->stride;
         max_layer = std::max(max_layer, L->stride * (size_t) ne);
+        max_expert_bytes = std::max(max_expert_bytes, L->L.bytes);
     }
     size_t fr = 0, tot = 0;
     CK(cudaMemGetInfo(&fr, &tot));
@@ -3057,6 +3252,7 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
             }
             L->n_slots = (int) ne;
         }
+        E.evict_all_gguf_pages();
         std::fprintf(stderr, "strata-q36: every routed expert in VRAM (%.2f GiB) in %.1f s\n", (double) total / (1 << 30),
                      ms_since(t0) / 1000.0);
         return true;
@@ -3100,46 +3296,148 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
             return false;
         }
     }
-    // host memory: every expert, pinned where the driver allows it (the prompt's stream and the slot copies)
-    size_t host = 0;
-    for (Layer* L : all)
-        if (!mtp_only || L == &m.mtp) host += L->stride * (size_t) ne + kMmqTail;
-    uint8_t* arena = nullptr;
-    bool pinned = cudaHostAlloc((void**) &arena, host, cudaHostAllocDefault) == cudaSuccess;
-    if (!pinned) {
-        (void) cudaGetLastError();
-        arena = (uint8_t*) std::malloc(host);
-        if (!arena) {
-            err = "no host memory for the experts (" + std::to_string(host >> 20) + " MiB)";
-            return false;
+
+    // Decide which experts are materialized in the permanent host RAM arena according to storage_mode:
+    // - Default: every expert of every hybrid layer (18.75 GiB)
+    // - ResidentExperts: every non-VRAM-slot, non-remote expert (with 24 layers on astor and S=23, 16 * 233 = 6.93 GiB)
+    // - ResidentBudget: up to resident_budget_gib GiB of non-VRAM-slot, non-remote experts, placed round-robin across local layers
+    // - MmapExperts: 0 GiB in permanent host RAM arena; CPU pool and staging read directly from mapped GGUF
+    std::vector<std::vector<bool>> keep_in_ram(all.size(), std::vector<bool>((size_t) ne, false));
+    std::vector<bool> full_layer_ram(all.size(), false);
+    size_t host = 0, n_ram_experts = 0;
+    auto is_remote_expert = [&](size_t li, int64_t e) -> bool {
+#if defined(STRATA_NETWORK_EXPERTS)
+        return E.net_worker && li < m.layers.size() && E.net_worker->holds((int32_t) li, (int32_t) e);
+#else
+        (void) li;
+        (void) e;
+        return false;
+#endif
+    };
+
+    if (E.storage_mode == Engine::ExpertStorageMode::Default) {
+        for (size_t li = 0; li < all.size(); ++li) {
+            Layer& L = *all[li];
+            if (mtp_only && &L != &m.mtp) continue;
+            full_layer_ram[li] = true;
+            for (int64_t e = 0; e < ne; ++e) {
+                keep_in_ram[li][(size_t) e] = true;
+                ++n_ram_experts;
+            }
+            host += L.stride * (size_t) ne + kMmqTail;
         }
+    } else if (E.storage_mode == Engine::ExpertStorageMode::ResidentExperts) {
+        for (size_t li = 0; li < all.size(); ++li) {
+            Layer& L = *all[li];
+            if (mtp_only && &L != &m.mtp) continue;
+            if (&L == &m.mtp && E.mtp_d == 0) continue;   // MTP unused when --mtp 0
+            for (int64_t e = S; e < ne; ++e) {
+                if (is_remote_expert(li, e)) continue;
+                keep_in_ram[li][(size_t) e] = true;
+                host += L.stride;
+                ++n_ram_experts;
+            }
+        }
+        if (host > 0) host += kMmqTail;
+    } else if (E.storage_mode == Engine::ExpertStorageMode::ResidentBudget) {
+        const size_t cap_bytes = E.resident_budget_gib > 0.0
+                                     ? (size_t) (E.resident_budget_gib * (double) (1ull << 30))
+                                     : 0;
+        for (int64_t e = S; e < ne; ++e) {
+            bool added = false;
+            for (size_t li = 0; li < all.size(); ++li) {
+                Layer& L = *all[li];
+                if (mtp_only && &L != &m.mtp) continue;
+                if (&L == &m.mtp && E.mtp_d == 0) continue;
+                if (is_remote_expert(li, e)) continue;
+                if (host + L.stride <= cap_bytes) {
+                    keep_in_ram[li][(size_t) e] = true;
+                    host += L.stride;
+                    ++n_ram_experts;
+                    added = true;
+                }
+            }
+            if (!added) break;
+        }
+        if (host > 0) host += kMmqTail;
     }
+
+    uint8_t* arena = nullptr;
+    bool pinned = false;
+    if (host > 0) {
+        pinned = cudaHostAlloc((void**) &arena, host, cudaHostAllocDefault) == cudaSuccess;
+        if (!pinned) {
+            (void) cudaGetLastError();
+            arena = (uint8_t*) std::malloc(host);
+            if (!arena) {
+                err = "no host memory for the experts (" + std::to_string(host >> 20) + " MiB)";
+                return false;
+            }
+        }
+        std::memset(arena, 0, host);
+    }
+    E.arena = arena;
+    E.arena_bytes = host;
+    E.arena_experts = n_ram_experts;
+    E.arena_pinned = pinned;
+    if (E.storage_mode != Engine::ExpertStorageMode::Default && max_expert_bytes > 0) {
+        CK(cudaHostAlloc((void**) &E.h_swap, max_expert_bytes, cudaHostAllocDefault));
+    }
+
     size_t off = 0;
     E.hy.resize(all.size());
+    std::vector<uint8_t> tmp_blob(max_expert_bytes, 0);
     for (size_t li = 0; li < all.size(); ++li) {
         Layer& L = *all[li];
         if (mtp_only && &L != &m.mtp) {   // a main layer: every expert in VRAM, as in the all-in-VRAM placement
             CK(cudaMalloc(&L.blobs, L.stride * (size_t) ne + kMmqTail));
             CK(cudaMemset(L.blobs, 0, L.stride * (size_t) ne + kMmqTail));
-            std::vector<uint8_t> blob(L.L.bytes, 0);
             for (int64_t e = 0; e < ne; ++e) {
-                expert_blob(L, e, blob.data());
-                CK(cudaMemcpy(L.blobs + (size_t) e * L.stride, blob.data(), L.L.bytes, cudaMemcpyHostToDevice));
+                expert_blob(L, e, tmp_blob.data());
+                CK(cudaMemcpy(L.blobs + (size_t) e * L.stride, tmp_blob.data(), L.L.bytes, cudaMemcpyHostToDevice));
             }
             L.n_slots = (int) ne;
             continue;
         }
-        L.hblobs = arena + off;
-        off += L.stride * (size_t) ne + kMmqTail;
-        std::memset(L.hblobs, 0, L.stride * (size_t) ne + kMmqTail);
-        for (int64_t e = 0; e < ne; ++e) expert_blob(L, e, L.hblobs + (size_t) e * L.stride);
+        Engine::Hy& H = E.hy[li];
+        H.hblob_of.assign((size_t) ne, nullptr);
+        if (full_layer_ram[li]) {
+            L.hblobs = arena + off;
+            off += L.stride * (size_t) ne + kMmqTail;
+            for (int64_t e = 0; e < ne; ++e) {
+                uint8_t* dst = L.hblobs + (size_t) e * L.stride;
+                expert_blob(L, e, dst);
+                H.hblob_of[(size_t) e] = dst;
+            }
+        } else {
+            L.hblobs = nullptr;
+            for (int64_t e = 0; e < ne; ++e) {
+                if (!keep_in_ram[li][(size_t) e]) continue;
+                uint8_t* dst = arena + off;
+                off += L.stride;
+                expert_blob(L, e, dst);
+                H.hblob_of[(size_t) e] = dst;
+            }
+        }
         L.n_slots = S;
         if (S > 0) {
             CK(cudaMalloc(&L.blobs, L.stride * (size_t) S + kMmqTail));
             CK(cudaMemset(L.blobs, 0, L.stride * (size_t) S + kMmqTail));
-            CK(cudaMemcpy(L.blobs, L.hblobs, L.stride * (size_t) S, cudaMemcpyHostToDevice));
+            if (L.hblobs != nullptr) {
+                CK(cudaMemcpy(L.blobs, L.hblobs, L.stride * (size_t) S, cudaMemcpyHostToDevice));
+            } else {
+                for (int s = 0; s < S; ++s) {
+                    if (H.hblob_of[(size_t) s] != nullptr) {
+                        CK(cudaMemcpy(L.blobs + (size_t) s * L.stride, H.hblob_of[(size_t) s], L.L.bytes,
+                                      cudaMemcpyHostToDevice));
+                    } else {
+                        expert_blob(L, s, tmp_blob.data());
+                        CK(cudaMemcpy(L.blobs + (size_t) s * L.stride, tmp_blob.data(), L.L.bytes,
+                                      cudaMemcpyHostToDevice));
+                    }
+                }
+            }
         }
-        Engine::Hy& H = E.hy[li];
         H.slot_of.assign((size_t) ne, -1);
         H.exp_in_slot.assign((size_t) S, 0);
         for (int s = 0; s < S; ++s) {
@@ -3153,6 +3451,16 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
         if (H.fmt.up_off != L.L.up_off || H.fmt.down_off != L.L.down_off || H.fmt.bytes != L.L.bytes) {
             err = "the CPU and GPU expert layouts differ";
             return false;
+        }
+        H.zc_fmt.resize((size_t) ne);
+        for (int64_t e = 0; e < ne; ++e) {
+            const uint8_t* zp0 = L.src_g + (size_t) e * L.src_gsz;
+            const uint8_t* zp1 = L.src_u + (size_t) e * L.src_gsz;
+            const uint8_t* zp2 = L.src_d + (size_t) e * L.src_dsz;
+            C::NativeFmt& zf = H.zc_fmt[(size_t) e];
+            zf = H.fmt;
+            zf.up_off = (size_t) ((uintptr_t) zp1 - (uintptr_t) zp0);
+            zf.down_off = (size_t) ((uintptr_t) zp2 - (uintptr_t) zp0);
         }
     }
     const size_t T = (size_t) E.tmax, N = (size_t) g.n_embd, Kp = (size_t) m.top_k;
@@ -3177,16 +3485,24 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
     }
     E.pool = std::make_unique<C::ExpertPool>(threads);
     CK(cudaDeviceSynchronize());
+    E.evict_all_gguf_pages();
     if (mtp_only)
         std::fprintf(stderr, "strata-q36: every main layer's routed experts in VRAM (%.2f GiB); the MTP block's: %d of "
                      "%lld in VRAM, the rest on the CPU pool (its drafts only)\n", (double) total_main / (1 << 30), S,
                      (long long) ne);
-    else
-    std::fprintf(stderr, "strata-q36: hybrid experts: %d of %lld per layer in VRAM (%.2f GiB), all %.2f GiB in %s host "
-                 "memory, the rest of a batch of <= %d rows on %d CPU threads, bigger prompt chunks streamed (%.2f GiB "
-                 "staging); %.1f s\n", S, (long long) ne, (double) S * per_slot / (1 << 30), (double) host / (1 << 30),
-                 pinned ? "pinned" : "pageable", E.hybrid_t, E.pool->workers() + (E.pool->host_works() ? 1 : 0),
-                 (double) staging / (1 << 30), ms_since(t0) / 1000.0);
+    else {
+        const char* mode_tag = E.storage_mode == Engine::ExpertStorageMode::MmapExperts     ? "mmap-experts"
+                             : E.storage_mode == Engine::ExpertStorageMode::ResidentExperts ? "resident-experts"
+                             : E.storage_mode == Engine::ExpertStorageMode::ResidentBudget  ? "resident-budget"
+                                                                                            : "all";
+        std::fprintf(stderr, "strata-q36: hybrid experts (%s): %d of %lld per layer in VRAM (%.2f GiB), %.2f GiB (%zu "
+                     "experts) in %s host memory, the rest of a batch of <= %d rows on %d CPU threads, bigger prompt "
+                     "chunks streamed (%.2f GiB staging); %.1f s\n", mode_tag, S, (long long) ne,
+                     (double) S * per_slot / (1 << 30), (double) host / (1 << 30), n_ram_experts,
+                     host == 0 ? "mapped GGUF" : (pinned ? "pinned" : "pageable"), E.hybrid_t,
+                     E.pool->workers() + (E.pool->host_works() ? 1 : 0), (double) staging / (1 << 30),
+                     ms_since(t0) / 1000.0);
+    }
     return true;
 #endif
 }
@@ -3911,7 +4227,8 @@ int strata::qwen35::run(int argc, char** argv) {
     int worker_timeout_ms = 5000;
 #endif
     int ctx = 32768, chunk = 0, n_gen = 64, bench_pp = 0, bench_tg = 0, mtp_d = 0, cpu_threads = 0, hybrid_rows = 128;
-    double expert_vram = -1.0;
+    double expert_vram = -1.0, resident_budget_gib = -1.0;
+    Engine::ExpertStorageMode storage_mode = Engine::ExpertStorageMode::Default;
     bool warm = true;
     int expert_slots = 0, batch = 0, draft_vocab = -1;
     bool serve_mode = false, graph = true, vision = false, batch_mtp = false;
@@ -3955,6 +4272,12 @@ int strata::qwen35::run(int argc, char** argv) {
         else if (a == "--cpu-threads") cpu_threads = std::atoi(next().c_str());
         else if (a == "--expert-slots") expert_slots = std::atoi(next().c_str());
         else if (a == "--hybrid-rows") hybrid_rows = std::atoi(next().c_str());
+        else if (a == "--mmap-experts") storage_mode = Engine::ExpertStorageMode::MmapExperts;
+        else if (a == "--resident-experts") storage_mode = Engine::ExpertStorageMode::ResidentExperts;
+        else if (a == "--resident-budget-gib") {
+            resident_budget_gib = std::atof(next().c_str());
+            storage_mode = Engine::ExpertStorageMode::ResidentBudget;
+        }
 #if defined(STRATA_NETWORK_EXPERTS)
         else if (a == "--expert-worker") worker_endpoint = next();
         else if (a == "--expert-worker-placement") worker_plan = next();
@@ -3970,6 +4293,7 @@ int strata::qwen35::run(int argc, char** argv) {
         } else {
             std::fprintf(stderr,
                          "usage: strata-q36 --model GGUF [--max-context 32768] [--chunk 512] [--no-graph]\n"
+                         "       [--mmap-experts | --resident-experts | --resident-budget-gib N]\n"
                          "       (--serve | --tokens IDS [--n 64] [--force IDS] [--dump-full-logits F] | --bench-pp N "
                          "--bench-tg N)\n");
             return 2;
@@ -3987,6 +4311,9 @@ int strata::qwen35::run(int argc, char** argv) {
 #endif
     if (mtp_d < 0 || mtp_d > 7) { std::fprintf(stderr, "strata-q36: --mtp takes 0 .. 7 drafts\n"); return 2; }
     if (chunk < 0 || chunk > 4096 || ctx < 256) { std::fprintf(stderr, "strata-q36: bad --chunk / --max-context\n"); return 2; }
+    if (storage_mode == Engine::ExpertStorageMode::ResidentBudget && resident_budget_gib < 0.0) {
+        std::fprintf(stderr, "strata-q36: --resident-budget-gib requires a non-negative GiB value\n"); return 2;
+    }
 #if defined(STRATA_NETWORK_EXPERTS)
     if (worker_endpoint.empty() != worker_plan.empty() || worker_timeout_ms <= 0 || worker_timeout_ms > 600000) {
         std::fprintf(stderr, "strata-q36: network experts require --expert-worker IPv4:port and --expert-worker-placement FILE; timeout 1..600000 ms\n"); return 2;
@@ -4005,6 +4332,8 @@ int strata::qwen35::run(int argc, char** argv) {
     }
     Engine E;
     E.use_graph = graph;
+    E.storage_mode = storage_mode;
+    E.resident_budget_gib = resident_budget_gib;
     if (chunk == 0) {
         // auto: the largest chunk (4096 .. 1024) that fits beside every expert in VRAM; 2048 when they will not all fit (a prompt chunk streams every layer's
         // experts over PCIe once, so a bigger chunk pays that once for more tokens)
@@ -4050,6 +4379,25 @@ int strata::qwen35::run(int argc, char** argv) {
                          fr / 1073741824.0, fr_raw / 1073741824.0, packed / 1073741824.0, experts / 1073741824.0, chunk);
     }
     E.init(m, ctx, chunk, batch, vision);
+    E.mtp_d = m.has_mtp ? mtp_d : 0;
+#if defined(STRATA_NETWORK_EXPERTS)
+    std::vector<strata::core::ExpertWorkerPair> worker_pairs;
+    if (!worker_endpoint.empty()) {
+        if (!strata::core::load_expert_placement_plan(worker_plan, (int)m.g.n_layers, (int)m.g.n_expert, worker_pairs, &err)) {
+            std::fprintf(stderr, "strata-q36: %s\n", err.c_str()); return 2;
+        }
+        E.net_worker = std::make_unique<strata::core::NetworkExpertExecutor>();
+        try {
+            const auto sha = strata::core::expert_worker_model_sha256(*m.file);
+            if (!E.net_worker->connect_and_handshake(worker_endpoint, m.g.n_layers, m.g.n_layers, m.g.n_expert,
+                    m.g.n_embd, m.g.n_ff, m.top_k, sha, worker_timeout_ms, err) || !E.net_worker->install_plan(worker_pairs, err)) {
+                std::fprintf(stderr, "strata-q36: network worker setup failed: %s\n", err.c_str()); return 1;
+            }
+        } catch (const std::exception& ex) {
+            std::fprintf(stderr, "strata-q36: network worker setup failed: %s\n", ex.what()); return 1;
+        }
+    }
+#endif
     if (!place_experts(m, E, expert_vram, cpu_threads, hybrid_rows, expert_slots, err)) {
         std::fprintf(stderr, "strata-q36: %s\n", err.c_str());
         return 1;
@@ -4059,29 +4407,17 @@ int strata::qwen35::run(int argc, char** argv) {
         if (!E.main_hybrid) {
             std::fprintf(stderr, "strata-q36: network experts require the hybrid CPU expert pool\n"); return 2;
         }
-        std::vector<strata::core::ExpertWorkerPair> pairs;
-        if (!strata::core::load_expert_placement_plan(worker_plan, (int)m.g.n_layers, (int)m.g.n_expert, pairs, &err)) {
-            std::fprintf(stderr, "strata-q36: %s\n", err.c_str()); return 2;
-        }
-        E.net_worker = std::make_unique<strata::core::NetworkExpertExecutor>();
-        try {
-            const auto sha = strata::core::expert_worker_model_sha256(*m.file);
-            if (!E.net_worker->connect_and_handshake(worker_endpoint, m.g.n_layers, m.g.n_layers, m.g.n_expert,
-                    m.g.n_embd, m.g.n_ff, m.top_k, sha, worker_timeout_ms, err) || !E.net_worker->install_plan(pairs, err)) {
-                std::fprintf(stderr, "strata-q36: network worker setup failed: %s\n", err.c_str()); return 1;
-            }
-        } catch (const std::exception& ex) {
-            std::fprintf(stderr, "strata-q36: network worker setup failed: %s\n", ex.what()); return 1;
-        }
-        if (!pairs.empty()) {
-            CK(cudaHostAlloc((void**)&E.h_ewts, (size_t)m.top_k * sizeof(float), cudaHostAllocDefault));
-            CK(cudaMalloc(&E.d_rsum, (size_t)m.g.n_embd * sizeof(float)));
-            E.net_sums.resize((size_t)m.g.n_embd);
+        if (!worker_pairs.empty()) {
+            const size_t Tn = (size_t) E.tmax;
+            CK(cudaHostAlloc((void**)&E.h_ewts, Tn * (size_t)m.top_k * sizeof(float), cudaHostAllocDefault));
+            CK(cudaMalloc(&E.d_rsum, Tn * (size_t)m.g.n_embd * sizeof(float)));
+            E.net_sums.resize(Tn * (size_t)m.g.n_embd, 0.0f);
+            E.net_mask.resize(Tn, 0);
         } else {
             // No remote rows: no added transfers, allocations or execution branches.
             E.net_worker->print_summary(); E.net_worker.reset();
         }
-        std::fprintf(stderr, "strata-q36: network placement acknowledged: %zu experts; decode CPU misses only\n", pairs.size());
+        std::fprintf(stderr, "strata-q36: network placement acknowledged: %zu experts; decode CPU misses only\n", worker_pairs.size());
     }
     const char* trace_path = std::getenv("STRATA_Q36_TRACE_MISSES");
     if (trace_path && *trace_path && E.main_hybrid) {
@@ -4124,8 +4460,65 @@ int strata::qwen35::run(int argc, char** argv) {
             if (!E.m->hybrid) return;
             const long long n = E.hy_cpu + E.hy_gpu;
             std::fprintf(stderr, "strata-q36: hybrid experts: %lld of %lld batch entries on the GPU (%.1f%%), %lld on the "
-                         "CPU pool in %.0f ms, %lld slot replacements\n", E.hy_gpu, n, n ? 100.0 * E.hy_gpu / n : 0.0,
-                         E.hy_cpu, E.hy_cpu_ms, E.hy_swaps);
+                         "CPU pool in %.0f ms (%lld mmap reads), %lld slot replacements\n", E.hy_gpu, n,
+                         n ? 100.0 * E.hy_gpu / n : 0.0, E.hy_cpu, E.hy_cpu_ms, E.hy_mmap_reads, E.hy_swaps);
+#if !defined(_WIN32)
+            size_t rss_kib = 0, pss_kib = 0, pss_anon_kib = 0, pss_file_kib = 0, anon_kib = 0, sh_clean_kib = 0, pr_clean_kib = 0;
+            {
+                std::ifstream smaps("/proc/self/smaps_rollup");
+                std::string line;
+                while (std::getline(smaps, line)) {
+                    std::istringstream iss(line);
+                    std::string key;
+                    size_t val = 0;
+                    if (!(iss >> key >> val)) continue;
+                    if (key == "Rss:") rss_kib = val;
+                    else if (key == "Pss:") pss_kib = val;
+                    else if (key == "Pss_Anon:") pss_anon_kib = val;
+                    else if (key == "Pss_File:") pss_file_kib = val;
+                    else if (key == "Anonymous:") anon_kib = val;
+                    else if (key == "Shared_Clean:") sh_clean_kib = val;
+                    else if (key == "Private_Clean:") pr_clean_kib = val;
+                }
+            }
+            const size_t ps = (size_t) sysconf(_SC_PAGESIZE);
+            auto mincore_bytes = [&](const uint8_t* p, size_t len) -> size_t {
+                if (!p || len == 0) return 0;
+                const uintptr_t u0 = (uintptr_t) p & ~(uintptr_t) (ps - 1);
+                const uintptr_t u1 = ((uintptr_t) p + len + ps - 1) & ~(uintptr_t) (ps - 1);
+                const size_t np = (u1 - u0) / ps;
+                if (np == 0) return 0;
+                std::vector<unsigned char> vec(np, 0);
+                if (mincore((void*) u0, u1 - u0, vec.data()) != 0) return 0;
+                size_t res = 0;
+                for (unsigned char v : vec) if (v & 1) ++res;
+                return res * ps;
+            };
+            size_t gguf_local_res = 0, gguf_remote_res = 0;
+            const int ne = (int) E.m->g.n_expert;
+            for (size_t l = 0; l < E.m->layers.size(); ++l) {
+                const Layer& L = E.m->layers[l];
+                const size_t lb = mincore_bytes(L.src_g, L.src_gsz * (size_t) ne) +
+                                  mincore_bytes(L.src_u, L.src_gsz * (size_t) ne) +
+                                  mincore_bytes(L.src_d, L.src_dsz * (size_t) ne);
+#if defined(STRATA_NETWORK_EXPERTS)
+                if (E.net_worker && E.net_worker->plan_holds_layer((int32_t) l)) gguf_remote_res += lb;
+                else gguf_local_res += lb;
+#else
+                gguf_local_res += lb;
+#endif
+            }
+            std::fprintf(stderr, "strata-q36: memory residency: host_arena %.2f GiB (%zu experts, %s), Rss %.2f GiB, "
+                         "Pss %.2f GiB (Anon %.2f GiB, File %.2f GiB), Anon %.2f GiB, Clean %.2f GiB, "
+                         "gguf_pagecache_local %.2f MiB, gguf_pagecache_remote %.2f MiB\n",
+                         (double) E.arena_bytes / (1ull << 30), E.arena_experts,
+                         E.arena_bytes == 0 ? "none" : (E.arena_pinned ? "pinned" : "pageable"),
+                         (double) rss_kib / (1024.0 * 1024.0), (double) pss_kib / (1024.0 * 1024.0),
+                         (double) pss_anon_kib / (1024.0 * 1024.0), (double) pss_file_kib / (1024.0 * 1024.0),
+                         (double) anon_kib / (1024.0 * 1024.0),
+                         (double) (sh_clean_kib + pr_clean_kib) / (1024.0 * 1024.0),
+                         (double) gguf_local_res / (1024.0 * 1024.0), (double) gguf_remote_res / (1024.0 * 1024.0));
+#endif
         }
     } report{E};
 #if defined(STRATA_NETWORK_EXPERTS)

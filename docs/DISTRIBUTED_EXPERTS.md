@@ -1,18 +1,23 @@
 # Network expert execution: experimental checkpoint
 
-This fork adds a Linux-only expert worker for **Qwen3.6 (`qwen35moe`) text decode**.
+This fork adds a Linux-only expert worker for **Qwen3.6 (`qwen35moe`) text decode**
+and integrates it with Strata's existing low-RAM expert storage modes
+(`--resident-experts`, `--resident-budget-gib N`, and `--mmap-experts`).
 It is off at build time and at run time. Full-model functional, zero-ownership,
-fault-recovery, and a 10 GbE trace-ranked placement sweep (up to `7,794` experts /
-`13.92 GiB` worker VRAM) have now been completed on the Kingston-only configuration.
-Eliminating unowned-layer `h_ewts` copies removed the zero-ownership overhead, and
+fault-recovery, a 10 GbE trace-ranked placement sweep (up to `7,794` experts /
+`13.92 GiB` worker VRAM), and a physical RAM residency sweep have now been completed
+on the Kingston-only configuration.
+Eliminating unowned-layer `h_ewts` copies removed the zero-ownership overhead,
 layer-concentrated placement (`layer-24L-full`, `6,144` experts across the top 24
 layers, `10.91 GiB` worker VRAM) cut primary CPU expert pool time during decode from
 `7,953 ms` to `2,755 ms` (`-65.4%`) and raised warm median decode throughput from
-`47.22 tok/s` to `49.62 tok/s` (`+5.1%`). Every expert is still retained in primary
-host RAM for fallback (`18.75 GiB`), so primary-RAM capacity reduction requires a
-separate remote-only residency mode with an explicit failure policy.
+`47.22 tok/s` to `49.62 tok/s` (`+5.1%`), and combining `layer-24L-full` with
+`--resident-experts` / `--resident-budget-gib N` / `--mmap-experts` cut primary
+process physical RAM (`Rss`) from **`42.05 GiB` to `8.31–9.23 GiB` (`-78%` to `-80%`)**
+while sustaining **`49.61–50.44 tok/s`** warm median decode and preserving clean
+mapped-GGUF fallback on worker disconnect.
 
-## Current checkpoint: full-model functional, fault-recovery, and 10 GbE placement sweep
+## Current checkpoint: full-model functional, fault-recovery, 10 GbE placement, and low-RAM residency sweep
 
 Following the Kingston-only integrity and expert-parity recheck on 5 November 2026,
 full-model CLI logit comparisons, the 6-case `--serve` qualification campaign
@@ -94,6 +99,40 @@ With `ip route get 192.168.63.177` verified on the `enp4s0` 10 GbE route (`src 1
   - `expert-7794` (`1,240` dispatches, `7,658` remote entries, `99.9%` of decode misses): `relative_l2 = 0.0406`, `mean_kl = 0.00313`, `max_kl = 0.0281`, `31 / 32` top-1 tokens match.
 - **Post-sweep model integrity & evidence:**
   Post-sweep full-file `sha256sum` of `/home/ztripez/models/qwen36/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf` matched stock (`55983c5a...`) with unchanged `stat` metadata. All sweep traces, placement files, logit dumps, and `evidence-manifest.sha256` are saved in `/var/tmp/strata-placement-sweep-20261105-laBhdK/` on `lucy` and mirrored under `/var/tmp/strata-placement-sweep-20261105-laBhdK/primary-evidence/` on `astor`.
+
+### 4. Low-RAM expert storage integration and physical RAM residency sweep (`--resident-experts`, `--resident-budget-gib N`, `--mmap-experts`)
+
+Instead of introducing a separate memory subsystem, `src/qwen35/q36_engine.cu` now wires Strata's existing expert-storage CLI flags (`--resident-experts`, `--resident-budget-gib N`, and `--mmap-experts`) directly into the Qwen3.6 hybrid + network expert hierarchy:
+
+1. **Per-expert host arena residency (`H.hblob_of[x]`) & remote-expert omission:**
+   - `E.net_worker` connects and installs its placement plan before `place_experts()` runs.
+   - In `--resident-experts` and `--resident-budget-gib N` modes, `place_experts()` skips both primary-GPU-slot experts (`0 .. S-1`) and remote-owned experts (`net_worker->holds(li, e)`), allocating pinned host `arena` space only for local non-VRAM experts (or up to `N GiB` round-robin across local layers). In `--mmap-experts` mode, `host_arena` is `0.00 GiB`.
+2. **Zero-copy mapped GGUF CPU fallback (`H.zc_fmt[x]`):**
+   - For any expert with `H.hblob_of[x] == nullptr`, `place_experts()` precomputes a per-expert `NativeFmt` (`H.zc_fmt[x]`) whose `up_off` and `down_off` point directly from `L.src_g + x * L.src_gsz` to `L.src_u + x * L.src_gsz` and `L.src_d + x * L.src_dsz` inside the read-only GGUF `mmap`, and `ExpertJobMulti` carries an optional `const NativeFmt* fmt` override so `ExpertPool` reads non-resident experts directly from the mapped GGUF without repacking.
+3. **Unmapping GGUF PTEs after startup & remote prefill execution:**
+   - In low-RAM modes, `evict_all_gguf_pages()` calls `madvise(..., MADV_DONTNEED)` after `place_experts()` and `warmup()` so the 21.5 GiB GGUF read during SHA-256 verification and placement is unmapped from the process's page tables before serving begins.
+   - Multi-token hybrid prefill on remote-owned layers is also dispatched to `net_worker` (sliced into sub-batches of `<= caps().max_tokens = 16` tokens) when remote experts have no local host RAM copy, preventing prompt prefill from faulting the 24 remote layers (`11.17 GiB`) into `lucy`'s page tables during normal operation.
+
+Measured on `lucy` (`RTX 3080 10 GiB`, `--expert-slots 12`) + `astor` (`AMD Radeon RX 6800 16 GiB`, `layer-24L-full` = `6,144` remote experts across 24 layers, `3` prompts $\times$ `64` tokens $\times$ `3` repetitions, `/proc/self/smaps_rollup` at engine exit, evidence in `/var/tmp/strata-lowram-sweep-20261106/`):
+
+| Mode (`layer-24L-full` unless noted) | Case | Host `arena` (`GiB` / experts) | Process `Rss` (`GiB`) | Process `Pss` (`GiB`) | `Pss_Anon` (`GiB`) | `Pss_File` (`GiB`) | Mapped GGUF expert reads (`hy_mmap_reads`) | Warm decode `tok/s` (med / mean) | All decode `tok/s` (med / mean) | Warm `TTFT` `ms` (med) |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Default (`all` in RAM, local only) | `baseline` | 18.75 (`10,496`) | 41.99 | 41.92 | 1.64 | 21.51 | 0 | 49.88 / 49.65 | 49.51 / 49.68 | 214.4 |
+| Default (`all` in RAM + `astor`) | `remote` | 18.75 (`10,496`) | 42.05 | 41.98 | 1.64 | 21.57 | 0 | 49.63 / 49.38 | 48.97 / 49.18 | 209.7 |
+| **`--resident-experts`** | **`remote`** | **7.04 (`3,904`)** | **9.09** | **9.02** | **1.65** | **0.31** | **0** | **50.22 / 49.92** | **50.10 / 49.79** | **198.5** |
+| `--resident-experts` | `disconnect` | 7.04 (`3,904`) | 18.67 | 18.61 | 1.64 | 9.90 | 109,897 | 48.86 / 48.58 | 48.43 / 48.59 | 215.0 |
+| `--resident-budget-gib 6` | `remote` | 6.00 (`3,329`) | 9.23 | 9.16 | 1.64 | 1.48 | 10,868 | 49.61 / 49.72 | 49.56 / 49.73 | 192.0 |
+| `--resident-budget-gib 4` | `remote` | 4.00 (`2,219`) | 9.11 | 9.04 | 1.65 | 3.36 | 30,212 | 49.94 / 49.95 | 49.87 / 50.05 | 187.0 |
+| `--resident-budget-gib 2` | `remote` | 2.00 (`1,109`) | 8.74 | 8.68 | 1.64 | 5.00 | 49,064 | 50.33 / 50.32 | 50.31 / 50.35 | 178.5 |
+| `--resident-budget-gib 1` | `remote` | 1.00 (`555`) | 8.57 | 8.50 | 1.64 | 5.83 | 57,420 | 50.03 / 50.23 | 49.99 / 50.28 | 169.5 |
+| **`--mmap-experts`** | **`remote`** | **0.00 (`0`)** | **8.31** | **8.24** | **1.65** | **6.56** | **68,095** | **50.44 / 50.01** | **50.41 / 50.08** | **168.7** |
+| `--mmap-experts` | `disconnect` | 0.00 (`0`) | 18.08 | 18.01 | 1.65 | 16.33 | 175,644 | 49.45 / 48.40 | 49.51 / 49.26 | 182.2 |
+
+- **Physical RAM savings vs. Linux page cache behavior:**
+  - In Default mode, `lucy` holds both the `18.75 GiB` pinned `host_arena` (`10,496` experts across 41 layers) and `21.57 GiB` of mapped GGUF file pages (`Pss_File`) faulted in during SHA-256 verification and placement, totaling **`42.05 GiB` `Rss`**.
+  - With `--resident-experts` + `layer-24L-full`, `lucy` keeps only the 16 local layers' non-VRAM experts in `host_arena` (`3,904` experts = **`7.04 GiB`** pinned), unmaps the GGUF after warmup (`Pss_File = 0.31 GiB`), performs **`0` mapped GGUF reads** during prefill or decode, and cuts process physical memory to **`Rss = 9.09 GiB` (`-32.96 GiB` / `-78.4%`)** while running at **`50.22 tok/s`** warm median decode (`198.5 ms` warm TTFT).
+  - Lowering `--resident-budget-gib` from `6 GiB` down to `0 GiB` (`--mmap-experts`) reduces pinned `host_arena` from `6.00 GiB` to `0.00 GiB`, while `Pss_File` grows correspondingly (`1.48 GiB` $\to$ `6.56 GiB`) as the 16 local layers' file-backed experts are faulted into the OS page cache by the CPU pool (`10,868` $\to$ `68,095` mmap reads). Across the entire budget sweep, the 24 remote-owned layers (`11.17 GiB`) remain completely unmapped in `lucy`'s process page tables (`Rss = 8.31–9.23 GiB`), and on `--mmap-experts` all `6.56 GiB` of local expert pages are clean file-backed pages (`Clean = 6.57 GiB`) that the Linux kernel can reclaim under memory pressure rather than locked `cudaHostAlloc` memory.
+  - When `disconnect` is injected mid-request after 30 worker responses, both `--resident-experts` and `--mmap-experts` recover seamlessly by faulting the 24 remote layers' experts directly from the mapped GGUF file (`Pss_File` rises by `+9.59 GiB` / `+9.77 GiB` to `9.90 GiB` / `16.33 GiB`, `Rss = 18.67 GiB` / `18.08 GiB`), completing all 9 requests with zero errors at `48.86–49.45 tok/s` warm median decode.
 
 ## Earlier checkpoint (5 November 2026): integrity and expert parity recheck passed
 

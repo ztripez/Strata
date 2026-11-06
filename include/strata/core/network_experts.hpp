@@ -79,6 +79,13 @@ class NetworkExpertExecutor {
         return layer_owned_[static_cast<size_t>(layer)] != 0;
     }
 
+    // Query whether `layer` was assigned to the remote worker in the installed placement plan (independent of health).
+    bool plan_holds_layer(int32_t layer) const {
+        if (layer < 0 || layer >= static_cast<int32_t>(total_layers_))
+            return false;
+        return layer_owned_[static_cast<size_t>(layer)] != 0;
+    }
+
     // Query whether (layer, expert) is owned by the remote worker and the worker connection is healthy.
     bool holds(int32_t layer, int32_t expert) const {
         if (!healthy_.load(std::memory_order_relaxed))
