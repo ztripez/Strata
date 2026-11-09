@@ -168,8 +168,11 @@ void expert_worker_shutdown(int fd);
 bool expert_worker_send_frame(int fd, ExpertWorkerMsgType type, uint64_t req_id, const void *payload,
                               uint32_t payload_len, std::string *err = nullptr, int timeout_ms = 5000,
                               uint16_t version = kExpertWorkerVersion);
+/// Receive one frame. An opt-in positive idle timeout bounds the first byte;
+/// after that byte arrives, the entire remaining frame shares timeout_ms.
+/// Zero retains the original single deadline, including idle time.
 bool expert_worker_recv_frame(int fd, ExpertWorkerFrameHeader &hdr, std::vector<uint8_t> &payload,
-                              std::string *err = nullptr, int timeout_ms = 5000);
+                              std::string *err = nullptr, int timeout_ms = 5000, int idle_timeout_ms = 0);
 bool expert_worker_send_error(int fd, uint64_t req_id, ExpertWorkerErrorCode code, const std::string &msg,
                               uint16_t version = kExpertWorkerVersion);
 

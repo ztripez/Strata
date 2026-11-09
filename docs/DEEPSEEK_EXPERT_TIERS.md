@@ -7,6 +7,13 @@ Terminal launch paths. Live tiered RPC and full hybrid inference remain unqualif
 ## Placement and native execution
 
 Without `--expert-vram-mib`, the DeepSeek worker retains its GPU-resident profile.
+
+For a layer owner that pauses during startup hashing, the worker can opt into
+`--idle-timeout-ms 3600000`. This bounds the wait for the first byte of each
+request. After that byte arrives, `--timeout-ms` still bounds the entire remaining
+frame; the longer idle allowance does not extend active RPC execution. The idle
+option accepts 1 through 7,200,000 milliseconds. Without it, the existing frame
+deadline includes idle time. A disconnected peer still closes the session.
 Supplying that option enables the worker's existing static placement across GPU,
 bounded copied RAM and mapped GGUF views. `--resident-budget-mib` limits the copied
 expert arena. These limits exclude process scratch, CPU tables and OS file cache.

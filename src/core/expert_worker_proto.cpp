@@ -274,11 +274,21 @@ bool expert_worker_send_frame(int fd, ExpertWorkerMsgType type, uint64_t req_id,
 }
 
 bool expert_worker_recv_frame(int fd, ExpertWorkerFrameHeader &hdr, std::vector<uint8_t> &payload, std::string *err,
-                              int timeout_ms) {
+                              int timeout_ms, int idle_timeout_ms) {
 #if !defined(_WIN32)
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+    if (timeout_ms <= 0 || idle_timeout_ms < 0) {
+        if (err) *err = "invalid expert worker frame deadline";
+        return false;
+    }
     std::vector<uint8_t> bytes(24);
-    if (!network_detail::transfer(fd, bytes.data(), bytes.size(), false, deadline, err))
+    size_t received = 0;
+    if (idle_timeout_ms > 0) {
+        const auto idle_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(idle_timeout_ms);
+        if (!network_detail::transfer(fd, bytes.data(), 1, false, idle_deadline, err)) return false;
+        received = 1;
+    }
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+    if (!network_detail::transfer(fd, bytes.data() + received, bytes.size() - received, false, deadline, err))
         return false;
     if (!expert_wire_decode(bytes, hdr) || hdr.magic != kExpertWorkerMagic ||
         (hdr.version != kExpertWorkerVersion && hdr.version != kExpertWorkerArithmeticVersion) ||

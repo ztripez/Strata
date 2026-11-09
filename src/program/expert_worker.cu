@@ -909,7 +909,7 @@ bool execute_worker_request(WorkerContext &ctx, const ExpertWorkerExecuteFixed &
     return true;
 }
 
-bool serve_session(int cfd, WorkerContext &ctx, int timeout_ms, bool verbose) {
+bool serve_session(int cfd, WorkerContext &ctx, int timeout_ms, int idle_timeout_ms, bool verbose) {
     std::string err;
     const uint16_t version = ctx.deepseek ? kExpertWorkerArithmeticVersion : kExpertWorkerVersion;
     if (!expert_worker_set_socket_opts(cfd, timeout_ms, &err)) {
@@ -926,7 +926,7 @@ bool serve_session(int cfd, WorkerContext &ctx, int timeout_ms, bool verbose) {
         std::fprintf(stderr, "strata-expert-worker: rejected request: %s\n", why);
         return false;
     };
-    while (expert_worker_recv_frame(cfd, hdr, payload, &err, timeout_ms)) {
+    while (expert_worker_recv_frame(cfd, hdr, payload, &err, timeout_ms, idle_timeout_ms)) {
         if (hdr.version != version) return reject("protocol version differs from the model adapter");
         if (hdr.request_id <= last_id)
             return reject("request IDs must increase");
@@ -1085,6 +1085,7 @@ int main(int argc, char **argv) {
     std::string bind_ep = "127.0.0.1:19450";
     int device = 0;
     int timeout_ms = 30000;
+    int idle_timeout_ms = 0; // opt-in first-byte wait; active frame deadlines stay unchanged
     int max_sessions = 0; // 0 = run indefinitely accepting sequential sessions
     bool verbose = false;
     int64_t expert_vram_mib = -1;
@@ -1107,6 +1108,15 @@ int main(int argc, char **argv) {
             device = std::atoi(next().c_str());
         else if (a == "--timeout-ms")
             timeout_ms = std::atoi(next().c_str());
+        else if (a == "--idle-timeout-ms") {
+            const auto value = next();
+            if (value.empty() || value.size() > 7 || value.find_first_not_of("0123456789") != std::string::npos ||
+                std::stoull(value) == 0 || std::stoull(value) > 7200000) {
+                std::fprintf(stderr, "strata-expert-worker: --idle-timeout-ms requires 1..7200000 milliseconds\n");
+                return 2;
+            }
+            idle_timeout_ms = static_cast<int>(std::stoull(value));
+        }
         else if (a == "--max-sessions")
             max_sessions = std::atoi(next().c_str());
         else if (a == "--expert-vram-mib" || a == "--resident-budget-mib") {
@@ -1126,6 +1136,7 @@ int main(int argc, char **argv) {
                 stderr,
                 "usage: strata-expert-worker --model GGUF [--bind IP:PORT]\n"
                 "                            [--device 0] [--timeout-ms 30000] [--max-sessions N] [--verbose]\n"
+                "                            [--idle-timeout-ms N]\n"
                 "                            [--expert-vram-mib N [--resident-budget-mib N]]\n");
             return 2;
         }
@@ -1207,7 +1218,7 @@ int main(int argc, char **argv) {
             return 1;
         }
         ++sessions;
-        serve_session(cfd, ctx, timeout_ms, verbose);
+        serve_session(cfd, ctx, timeout_ms, idle_timeout_ms, verbose);
         expert_worker_close(cfd);
     }
 

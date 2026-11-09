@@ -373,6 +373,51 @@ void framing_tests() {
     check(!load_expert_placement_plan(path, L, E, pairs, &err), "garbage placement accepted");
     unlink(path.c_str());
 }
+
+void idle_deadline_tests() {
+    const auto frame = expert_wire_encode(ExpertWorkerFrameHeader{kExpertWorkerMagic,1,7,42,0,0});
+    // A startup pause may exceed the active frame budget only when explicitly enabled.
+    for (const int idle_ms : {0, 1000}) {
+        int f[2];check(socketpair(AF_UNIX,SOCK_STREAM,0,f)==0,"idle socketpair");
+        std::thread sender([&] {
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            (void)send(f[0],frame.data(),frame.size(),MSG_NOSIGNAL);
+            close(f[0]);
+        });
+        ExpertWorkerFrameHeader header{};std::vector<uint8_t> payload;std::string error;
+        const bool ok=expert_worker_recv_frame(f[1],header,payload,&error,100,idle_ms);
+        close(f[1]);sender.join();
+        check(ok==(idle_ms>0),"idle opt-in did not preserve default frame deadline");
+        if(ok) check(header.request_id==42 && payload.empty(),"idle frame changed wire contents");
+    }
+    // Once the first byte arrives, neither a slow header nor a stalled payload
+    // may consume the longer idle budget.
+    for(const bool stalled_payload : {false,true}) {
+        int f[2];check(socketpair(AF_UNIX,SOCK_STREAM,0,f)==0,"active socketpair");
+        auto bytes=frame;if(stalled_payload) bytes[16]=1;
+        const size_t sent=stalled_payload ? bytes.size():1;
+        check(send(f[0],bytes.data(),sent,MSG_NOSIGNAL)==static_cast<ssize_t>(sent),"active fixture send");
+        ExpertWorkerFrameHeader header{};std::vector<uint8_t> payload;std::string error;
+        const auto start=Clock::now();
+        const bool ok=expert_worker_recv_frame(f[1],header,payload,&error,100,1000);
+        const auto elapsed=Clock::now()-start;
+        close(f[0]);close(f[1]);
+        check(!ok && error=="network frame deadline exceeded","partial active frame escaped deadline");
+        check(elapsed<std::chrono::milliseconds(700),"active frame inherited idle deadline");
+    }
+    int f[2];check(socketpair(AF_UNIX,SOCK_STREAM,0,f)==0,"empty idle socketpair");
+    ExpertWorkerFrameHeader header{};std::vector<uint8_t> payload;std::string error;
+    const auto start=Clock::now();
+    check(!expert_worker_recv_frame(f[1],header,payload,&error,1000,100),"empty idle socket never timed out");
+    check(Clock::now()-start<std::chrono::milliseconds(700),"idle deadline used active budget");
+    check(!expert_worker_recv_frame(f[1],header,payload,&error,0,100) && error=="invalid expert worker frame deadline",
+          "invalid active deadline waited for idle data");
+    close(f[0]);
+    check(!expert_worker_recv_frame(f[1],header,payload,&error,100,1000) && error=="network peer disconnected",
+          "idle disconnect was hidden");
+    close(f[1]);
+    std::puts("expert worker idle deadline: delayed startup, active header/payload, idle expiry and disconnect PASS");
+}
 } // namespace
 // Run the actual native adapter method against this test's independent TCP
 // arithmetic oracle. This minimal context supplies no GPU or alternate kernels.
@@ -483,6 +528,7 @@ int main(int argc, char **argv) {
             identity_span_tests();
             cpu_miss_adapter_tests();
             framing_tests();
+            idle_deadline_tests();
             executor_tests();
         }
         std::puts("expert_worker_proto_test: PASS");

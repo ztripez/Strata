@@ -432,6 +432,15 @@ campaign from a pilot and cap it at eight hours. Report TIMEOUT with the unfinis
 phase; do not silently increase budgets or call a timeout a numerical failure.
 One retry is allowed only after recording a concrete cause and changed condition.
 
+For the new E4 static controls, declare 45 minutes per expert-enabled primary
+startup before collecting data. These primaries hash the four GGUF expert shards
+for the expert contract, then the six mapped files for the layer contract.
+Layer-only primaries and expert workers retain the 30-minute startup limit;
+each request retains 30 minutes, and the full fixture retains eight hours.
+This declaration does not change a running or completed E1/E3 trial's limits.
+The worker's opt-in one-hour first-byte idle allowance permits startup hashing
+and waiting for the other layer owner; active frame/RPC limits stay 30 seconds.
+
 Any unexplained byte corruption stops runtime qualification. A quality failure
 stops performance claims. A failed speed gate does not erase a passing capacity
 result, but E8 remains incomplete. Fix transport/ownership/arithmetic defects before
