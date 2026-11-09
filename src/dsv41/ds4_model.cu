@@ -2758,6 +2758,16 @@ struct Model::Impl {
     // ---- loading
     bool load(const Options& opt, std::string& err) {
         o = opt;
+#if defined(STRATA_NETWORK_EXPERTS)
+        if (o.expert_vram_mib < -1 || o.expert_vram_mib > 65536 ||
+            (o.expert_vram_mib >= 0 && (o.gpus.size() != 1 || o.tp != 1 || o.threads || !sync_decode ||
+                o.seqs != 1 || o.prefill_chunk != 0 || o.vision || o.dspark || o.dspark_auto ||
+                o.expert_cache || o.ssd_cache_gb != 0 || o.vram_experts_auto || o.mmap_experts != 1 ||
+                !lane_env_off() || disk_skip_w > 0 || ram_skip_w > 0))) {
+            err="fixed expert VRAM budget requires bounded synchronous single-GPU text windows without cache/store/skip and 0..65536 MiB";
+            return false;
+        }
+#endif
         const double t0 = now_ms();
         if (!pk.load(o.pack, err)) return false;
         g.from(pk);
@@ -2771,10 +2781,11 @@ struct Model::Impl {
               ((o.layer_begin == 20 || o.layer_begin == 24) && o.layer_end == 40)) ||
             o.gpus.size() != 1 || o.tp != 1 || o.threads || !sync_decode ||
             o.seqs != 1 || o.prefill_chunk != 0 || o.vision || o.dspark || o.dspark_auto ||
-            o.experts != 6 || o.vram_experts_auto || o.vram_experts != 0 || o.expert_cache ||
+            o.experts != 6 || o.vram_experts_auto || !std::isfinite(o.vram_experts) ||
+            o.vram_experts < 0 || o.vram_experts > 1 || o.expert_cache ||
             o.ssd_cache_gb != 0 || o.mmap_experts != 1 ||
             !lane_env_off() || disk_skip_w > 0 || ram_skip_w > 0)) {
-            err = "assigned-layer probe requires cut 20/24, one synchronous GPU, explicit six experts, mapped CPU experts, --prefill-chunk 0, DS4_STREAM=0, no cache/store/skip/vision/DSpark";
+            err = "assigned-layer probe requires cut 20/24, one synchronous GPU, explicit six experts and VRAM share in [0,1], mapped CPU experts, --prefill-chunk 0, DS4_STREAM=0, no cache/store/skip/vision/DSpark";
             return false;
         }
 #endif
@@ -3754,6 +3765,12 @@ struct Model::Impl {
         // the experts: VRAM slots in what each device has left (after the PCIe lane's staging slots), the rest on the host
         if (!lane_alloc(err)) return false;
         if (!place_experts(err)) return false;
+#if defined(STRATA_NETWORK_EXPERTS)
+        if (o.expert_vram_mib >= 0 && devs[0].experts > static_cast<size_t>(o.expert_vram_mib)*1048576) {
+            err="native expert arena exceeded its fixed VRAM budget";
+            return false;
+        }
+#endif
         if (!load_experts(err)) return false;
         if (pk.gguf) make_pools();
         if (chunk > 0) {
@@ -5592,6 +5609,17 @@ struct Model::Impl {
                 budget = capped;
                 room = std::max(0.0, room - std::min(budget, all) * nm);
             }
+#if defined(STRATA_NETWORK_EXPERTS)
+            if (o.expert_vram_mib >= 0) {
+                const double fixed=static_cast<double>(o.expert_vram_mib)*1048576.0;
+                if (budget < fixed) {
+                    err="fixed expert VRAM budget does not fit the native allocator's available room";
+                    return false;
+                }
+                budget=fixed;
+                std::fprintf(stderr,"ds4-expert-budget: fixed_mib=%lld available_policy=native\n",static_cast<long long>(o.expert_vram_mib));
+            }
+#endif
             double budget_t = budget;   // the drafter's experts first, all of them (every draft uses its blocks)
             for (Layer& l : L)
                 if (l.grp == (int) gi && l.mtp) {
@@ -14565,6 +14593,20 @@ struct Model::Impl {
                     if (l.slot[static_cast<size_t>(expert)]<0) per[static_cast<size_t>(expert)].clear();
                 for (const auto pick:picks)
                     per[static_cast<size_t>(pick.first)].push_back({pick.second/kPicks,pick.second%kPicks});
+            }
+            if (o.verbose) {
+                for (int t=0;t<T;++t) {
+                    int gpu=0,cpu=0;
+                    for (int slot=0;slot<l.k_exp;++slot)
+                        gpu+=l.slot[static_cast<size_t>(h_idx[t*kPicks+slot])]>=0;
+                    for (const auto pick:picks) cpu+=pick.second/kPicks==t;
+                    const int remote=l.k_exp-gpu-cpu;
+                    if (remote<0 || (remote>0 && (network_mask.empty() || !network_mask[static_cast<size_t>(t)]))) {
+                        err="network tier accounting differs from acknowledged expert coverage";return false;
+                    }
+                    std::fprintf(stderr,"ds4-network-tiers: layer=%d position=%lld local_gpu=%d local_cpu=%d remote=%d fallback=%d\n",
+                        l.il,static_cast<long long>(p0+t),gpu,cpu,remote,net_warned);
+                }
             }
         }
 #endif

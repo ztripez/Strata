@@ -54,6 +54,7 @@ def main() -> None:
             str(output),
         ]
         qualified = worker + model + plan + identity
+        gpu_budget = ["--expert-vram-mib", "384"]
         teacher = ["--decode-mode", "teacher-forced"]
         reference = ["reference", "PACK", str(prompt), str(targets), "1", str(output)]
         cases = [
@@ -220,6 +221,60 @@ def main() -> None:
                 teacher + reference,
                 "requires explicit DS4_IQ_Q8K=1",
                 "0",
+            ),
+            (
+                "gpu-budget-over-budget",
+                ["--expert-vram-mib", "65537"] + role,
+                "invalid probe argument",
+                "1",
+            ),
+            (
+                "gpu-budget-negative",
+                ["--expert-vram-mib", "-1"] + role,
+                "invalid probe argument",
+                "1",
+            ),
+            (
+                "gpu-budget-nan",
+                ["--expert-vram-mib", "nan"] + role,
+                "invalid probe argument",
+                "1",
+            ),
+            (
+                "gpu-budget-infinity",
+                ["--expert-vram-mib", "inf"] + role,
+                "invalid probe argument",
+                "1",
+            ),
+            (
+                "gpu-budget-invalid-text",
+                ["--expert-vram-mib", "384suffix"] + role,
+                "invalid probe argument",
+                "1",
+            ),
+            (
+                "gpu-budget-missing-plan",
+                gpu_budget + role,
+                "nonzero expert VRAM budget requires an explicit --plan-id",
+                "1",
+            ),
+            (
+                "gpu-budget-per32-refused",
+                gpu_budget + identity + role,
+                "requires explicit DS4_IQ_Q8K=1",
+                "0",
+            ),
+            (
+                "gpu-budget-zero-per32-refused",
+                ["--expert-vram-mib", "0"] + role,
+                "requires explicit DS4_IQ_Q8K=1",
+                "0",
+            ),
+            (
+                "gpu-budget-duplicate-option",
+                gpu_budget + gpu_budget + identity + role,
+                "repeated layer adapter option",
+                "1",
             ),
         ]
         for name, arguments, expected, arithmetic in cases:

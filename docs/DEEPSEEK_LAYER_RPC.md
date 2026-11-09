@@ -98,8 +98,8 @@ DS4_IQ_Q8K=1 BUILD/deepseek_layer_tcp_test --experts 6 reference PACK PROMPT_IDS
 ```
 
 `PROMPT_IDS` contains whitespace-separated token IDs from the pinned tokenizer.
-The harness uses one sequence, context 2048, native synchronous windows, six
-experts, mapped CPU experts, no expert GPU cache/RAM store, no DSpark and no
+By default the harness uses one sequence, context 2048, native synchronous windows,
+six experts, mapped CPU experts, no expert GPU cache/RAM store, no DSpark and no
 vision. Prefix and suffix load only their assigned ranges. A 16-row prompt
 window returns its final logit row; decode uses one row. The coordinator's
 initial greedy policy chooses the first finite maximum; the reference mode
@@ -187,9 +187,29 @@ orchestrator plan. Actual loaded model/pack and peer executable identities are
 still independently checked. Supplying a plan ID is not E6 qualification.
 
 The assigned native model uses its existing synchronous CPU-miss dispatch helper
-for eligible remote experts. Local expert GPU caching and the RAM store remain
+for eligible remote experts. The local replacement cache and RAM store remain
 disabled in this bounded profile. Expert arithmetic, fallback during native
 execution and the combined hybrid path still require live qualification.
+
+### Optional fixed local GPU expert residency
+
+`--expert-vram-mib MIB` requests a fixed budget for the existing native expert
+allocator. It accepts 0..65536 MiB and refuses a budget that does not fit the
+allocator's available room; it never silently reduces that budget. Expert units
+can leave unused space within the limit. Zero residency remains the harness
+default. A nonzero budget requires an explicit `--plan-id`; the trusted experiment
+manifest must pin each process's budget. The native allocator places only owned layers'
+experts and leaves other picks on the existing CPU/file-backed path. It does not
+introduce another cache, allocator or transfer scheme.
+
+When expert networking and verbose output are enabled, `ds4-network-tiers`
+records each applicable layer/token's local GPU, local CPU and acknowledged
+remote pick counts. A live E4 fixture must show all three counts positive for
+one token/layer, no fallback and correct combined output. A local CPU count
+does not measure cold SSD/NFS reads; OS page-cache residency is separate.
+Nonzero-GPU assigned loading, hard-budget refusal, native tier accounting and
+hybrid arithmetic still require live qualification. Previous E2/E3 CPU-only
+receipts retain their original zero-residency profile.
 
 ### Teacher-forced logit capture
 

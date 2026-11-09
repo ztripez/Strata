@@ -28,6 +28,14 @@ A following frozen HIP reference/TCP batch is active in
 same-backend logits/tokens, fresh sessions and an explicit worker-loss probe.
 Its result is pending. Earlier sections below retain the preceding checkpoints.
 
+At 22:40 CET, that campaign's real native suffix passed identical-duplicate
+result retention, conflicting/late duplicate rejection and stale-incarnation
+rejection before native execution. The prefix is loading for the exact control;
+the planned fourth-request loss check has not run yet. A separate frozen
+mixed-host two-prompt/EOS/restart campaign is queued behind this control's
+successful acceptance, in
+`/var/tmp/strata-deepseek-e3-mixed-batch-20261109/`.
+
 ## Qwen: bounded tiered-worker milestone completed
 
 The opt-in worker can acknowledge more experts than fit in GPU memory and use
@@ -363,3 +371,18 @@ Live teacher-forced native capture has NOT RUN; no E5 quality pass is asserted.
 Receipts are in `/var/tmp/strata-deepseek-teacher-forcing-20261109/`.
 The active E3 control and queued mixed-host campaign use their earlier frozen
 executables and do not include this change.
+
+## Fixed native GPU expert budget preparation
+
+The assigned-layer profile now permits GPU expert residency through Strata's
+existing allocator. The harness accepts an explicit `--expert-vram-mib` limit;
+an infeasible fixed budget is refused instead of silently reduced. Nonzero
+budgets require an explicit plan ID. Local replacement caching and the RAM store
+remain disabled in this bounded profile. Verbose expert-network runs record
+per-layer/token local GPU, local CPU and acknowledged remote pick counts.
+
+CUDA/HIP engine and harness builds and thirty-seven CLI admission cases per
+backend passed. Live fixed-budget loading/refusal, the same-token three-tier
+fixture and combined hybrid arithmetic have NOT RUN. Receipts are in
+`/var/tmp/strata-deepseek-local-gpu-budget-20261109/`. No E4, E5, capacity or
+performance pass is asserted by these build/admission checks.

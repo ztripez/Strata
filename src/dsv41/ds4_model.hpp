@@ -77,10 +77,14 @@ struct Options {
 #if defined(STRATA_NETWORK_EXPERTS)
     /// Experimental assigned-only load. Default -1 keeps the complete model.
     /// Initial ranges are [0,20/24) or [20/24,40), synchronous text windows,
-    /// mapped CPU experts and no local expert cache/store; expert RPC is opt-in.
+    /// mapped CPU experts, optional GPU expert budget and no local expert cache/store.
+    /// Expert RPC is opt-in.
     /// Execution requires configure_boundary_probe(); ordinary checkpoints and
     /// session migration are unsupported.
     int layer_begin = 0, layer_end = -1;
+    /// Opt-in fixed budget for native expert placement on one explicitly selected
+    /// GPU. -1 keeps the existing share policy; an infeasible budget is refused.
+    int64_t expert_vram_mib = -1;
     /// Opt-in text-window expert adapter; GGUF must match the pack's expert views.
     std::string expert_worker, expert_worker_placement, expert_worker_model;
     int expert_worker_timeout_ms = 5000;

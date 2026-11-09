@@ -223,6 +223,7 @@ int main(int argc,char **argv) {
                 check(value=="greedy" || value=="teacher-forced","decode mode must be greedy or teacher-forced");
                 teacher_forced=value=="teacher-forced";decode_mode_provided=true;
             }
+            else if(flag=="--expert-vram-mib") {o.expert_vram_mib=number(value.c_str(),65536);o.vram_experts=1;}
             else check(false,"unknown layer adapter option");
             argc-=2;argv+=2;
         }
@@ -230,6 +231,7 @@ int main(int argc,char **argv) {
         check(experts==!o.expert_worker_model.empty() && experts==!o.expert_worker_placement.empty(),
               "expert-worker endpoint, GGUF model and placement are required together");
         check(!expert_timeout_provided || experts,"expert-worker timeout requires an expert worker");
+        check(o.expert_vram_mib<=0 || plan_provided,"nonzero expert VRAM budget requires an explicit --plan-id");
         if(experts) {
             check(plan_provided,"hybrid layer campaign requires an explicit shared --plan-id");
             check(o.expert_worker_timeout_ms>0,"expert-worker timeout must be positive");
