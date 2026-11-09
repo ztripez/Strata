@@ -6,6 +6,8 @@
 #include <cerrno>
 #include <cmath>
 #include <poll.h>
+#include <limits>
+#include <set>
 #include <sstream>
 #include <sys/random.h>
 #include <sys/socket.h>
@@ -76,7 +78,7 @@ void receipt(const char *role,const DeepSeekLayerContract &c,const std::array<ui
         role,c.arithmetic,c.identity.next_layer,hex(c.identity.model).c_str(),hex(c.identity.pack).c_str(),hex(c.identity.plan).c_str(),hex(binary).c_str());
     std::fflush(stdout);
 }
-void run_suffix(Model &model,int cut,const std::string &endpoint,int timeout_ms,int accept_ms,const std::filesystem::path &out) {
+void run_suffix(Model &model,int cut,const std::string &endpoint,int timeout_ms,int accept_ms,int connections,const std::filesystem::path &out) {
     auto c=contract(model,cut);auto first=c.identity;first.session=1;std::string error;
     check(model.configure_boundary_probe(cut,first,{},error),error);c.layout=model.boundary_layout();model.reset();
     DeepSeekLayerCapabilities caps;caps.contract=c;caps.binary_sha256=digest(read("/proc/self/exe"));
@@ -106,18 +108,31 @@ void run_suffix(Model &model,int cut,const std::string &endpoint,int timeout_ms,
     std::filesystem::rename(out/"capabilities.pending",out/"capabilities.bin");
     receipt("suffix",c,caps.binary_sha256);memory("ready");
     std::printf("E3_TCP_LISTEN endpoint=%s incarnation=%llu session_floor=1\n",endpoint.c_str(),static_cast<unsigned long long>(caps.incarnation));std::fflush(stdout);
-    pollfd pfd{listener.fd,POLLIN,0};check(::poll(&pfd,1,accept_ms)>0,"suffix accept deadline exceeded");
-    Socket peer{::accept(listener.fd,nullptr,nullptr)};check(peer.fd>=0,"suffix accept failed");
-    const bool served=service.serve(peer.fd,timeout_ms,error);model.reset();
-    memory("finished");check(served,error);
-    std::printf("E3_TCP_SUFFIX windows=%llu capture_bytes=%llu PASS; quality/performance NOT QUALIFIED\n",
-        static_cast<unsigned long long>(executed),static_cast<unsigned long long>(capture_bytes));
+    int aborted=0;
+    for(int connection=1;connection<=connections;++connection) {
+        pollfd pfd{listener.fd,POLLIN,0};check(::poll(&pfd,1,accept_ms)>0,"suffix accept deadline exceeded");
+        Socket peer{::accept(listener.fd,nullptr,nullptr)};check(peer.fd>=0,"suffix accept failed");
+        const uint64_t before=executed;
+        error.clear();
+        const bool served=service.serve(peer.fd,timeout_ms,error);model.reset();
+        std::printf("E3_TCP_SESSION connection=%d session_floor=%llu windows=%llu success=%d\n",connection,
+            static_cast<unsigned long long>(service.capabilities().last_session),static_cast<unsigned long long>(executed-before),served);
+        if(!served) {++aborted;std::fprintf(stderr,"E3 TCP native session aborted: %s\n",error.c_str());}
+        std::fflush(stdout);
+    }
+    memory("finished");
+    std::printf("E3_TCP_SUFFIX connections=%d aborted=%d windows=%llu capture_bytes=%llu %s; quality/performance NOT QUALIFIED\n",
+        connections,aborted,static_cast<unsigned long long>(executed),static_cast<unsigned long long>(capture_bytes),aborted ? "FAIL":"PASS");
+    check(aborted==0,"one or more native suffix sessions aborted; per-connection failures retained");
 }
 void run_generation(Model &model,const DeepSeekLayerContract &c,const std::vector<int> &prompt,int steps,bool ignore_eos,
-                    const std::filesystem::path &out,DeepSeekLayerClient *client,int cut) {
+                    const std::filesystem::path &out,DeepSeekLayerClient *client,int cut,uint64_t &session_floor) {
     std::string error;DeepSeekLayerResult last;uint64_t windows=0,capture_bytes=0;std::vector<float> logits;
     if(client) {
-        auto identity=c.identity;identity.session=client->capabilities().last_session+1;
+        auto identity=c.identity;
+        const uint64_t floor=std::max(session_floor,client->capabilities().last_session);
+        check(floor<std::numeric_limits<uint64_t>::max()-1,"coordinator session IDs exhausted");
+        identity.session=floor+1;session_floor=identity.session;
         check(client->begin(identity.session,error),error);
         check(model.configure_boundary_probe(cut,identity,[&](const auto &capture,std::string &e) {
             DeepSeekLayerResult result;if(!client->execute(capture,1,result,e)) return false;
@@ -126,6 +141,8 @@ void run_generation(Model &model,const DeepSeekLayerContract &c,const std::vecto
             last=std::move(result);capture_bytes+=encode_deepseek_boundary(c.layout,capture).size();return true;
         },error),error);
     }
+    std::printf("E3_TCP_REQUEST session=%llu output=%s\n",static_cast<unsigned long long>(client ? session_floor:0),out.string().c_str());
+    std::fflush(stdout);
     std::ofstream history(out/"windows.jsonl");check(static_cast<bool>(history),"cannot create token/window history");
     auto advance=[&](const int *ids,int count) {
         check(model.feed(ids,count,client ? 0:1,error),error);
@@ -164,23 +181,35 @@ int main(int argc,char **argv) {
               "native layer campaign requires explicit --experts 6 before the role");
         argc-=2;argv+=2;
         check(argc>=2,"missing suffix/prefix/reference role");const std::string role=argv[1];
-        check((role=="suffix" && argc==8) || (role=="prefix" && argc==10) || (role=="reference" && argc==7),
-            "usage: suffix PACK CUT LISTEN RPC_MS ACCEPT_MS OUT | prefix PACK CUT ENDPOINT WORKER_SHA PROMPT_IDS DECODE IGNORE_EOS OUT | reference PACK PROMPT_IDS DECODE IGNORE_EOS OUT");
+        const bool suffix=role=="suffix",prefix=role=="prefix",reference=role=="reference";
+        check((suffix && argc==9) || (prefix && argc>=11 && (argc-7)%4==0) || (reference && argc>=7 && (argc-3)%4==0),
+            "usage: suffix PACK CUT LISTEN RPC_MS ACCEPT_MS CONNECTIONS OUT | prefix PACK CUT ENDPOINT WORKER_SHA RPC_MS [PROMPT_IDS DECODE IGNORE_EOS OUT]... | reference PACK [PROMPT_IDS DECODE IGNORE_EOS OUT]...");
         check(setenv("DS4_SYNC","1",1)==0 && setenv("DS4_STREAM","0",1)==0,"cannot select native synchronous windows");
-        const bool suffix=role=="suffix",prefix=role=="prefix";
-        const int cut=role=="reference" ? 20:number(argv[3],24);check(cut==20 || cut==24,"unsupported native layer cut");
-        const int timeout_ms=suffix ? number(argv[5],600000):600000;
+        const int cut=reference ? 20:number(argv[3],24);check(cut==20 || cut==24,"unsupported native layer cut");
+        const int timeout_ms=suffix ? number(argv[5],600000):prefix ? number(argv[6],600000):600000;
         const int accept_ms=suffix ? number(argv[6],7200000):0;
-        check(timeout_ms>0 && (!suffix || accept_ms>0),"invalid suffix deadline");
+        const int connections=suffix ? number(argv[7],16):0;
+        check(timeout_ms>0 && (!suffix || (accept_ms>0 && connections>0)),"invalid layer deadline or connection count");
         if(prefix || suffix) {
             std::string host;uint16_t port=0;check(expert_worker_parse_host_port(argv[4],host,port),"invalid numeric layer endpoint");
         }
         if(prefix) (void)unhex(argv[5]);
+        struct Request {std::vector<int> prompt;int steps;bool ignore;std::filesystem::path out;};
+        std::vector<Request> requests;std::set<std::filesystem::path> destinations;
         if(!suffix) {
-            const int at=prefix ? 6:3;
-            check(number(argv[at+1],1024)>0,"decode count must be positive");(void)number(argv[at+2],1);
+            const int first=prefix ? 7:3;check((argc-first)/4<=16,"too many requests in one bounded campaign");
+            for(int at=first;at<argc;at+=4) {
+                const int steps=number(argv[at+1],1024);const bool ignore=number(argv[at+2],1)!=0;
+                check(steps>0,"decode count must be positive");
+                auto prompt=tokens(argv[at],129280);
+                check(prompt.size()+static_cast<size_t>(steps)<=2048,"generation exceeds declared context");
+                const auto out=std::filesystem::absolute(argv[at+3]).lexically_normal();
+                check(destinations.insert(out).second && !std::filesystem::exists(out),"duplicate or existing request evidence directory");
+                requests.push_back({std::move(prompt),steps,ignore,out});
+            }
         }
-        const std::filesystem::path out=argv[argc-1];check(std::filesystem::create_directory(out),"evidence output directory already exists");
+        const std::filesystem::path suffix_out=suffix ? argv[8]:"";
+        if(suffix) check(std::filesystem::create_directory(suffix_out),"suffix evidence output directory already exists");
         auto o=options(argv[2]);o.verbose=true;
         if(suffix) {o.layer_begin=cut;o.layer_end=40;}
         if(prefix) {o.layer_begin=0;o.layer_end=cut;}
@@ -193,18 +222,23 @@ int main(int argc,char **argv) {
         error.clear();
         memory("before");check(model.load(o,error),error);memory("loaded");
         check(strata::ds4::gguf::iq_q8k_activations(),"layer campaign requires explicit DS4_IQ_Q8K=1");
-        if(suffix) {run_suffix(model,cut,argv[4],timeout_ms,accept_ms,out);return 0;}
-        const int prompt_at=prefix ? 6:3;
-        const auto prompt=tokens(argv[prompt_at],model.vocab());const int steps=number(argv[prompt_at+1],1024);
-        const int ignore=number(argv[prompt_at+2],1);check(steps>0 && prompt.size()+static_cast<size_t>(steps)<=2048,"generation exceeds declared context");
+        check(model.vocab()==129280,"native layer campaign requires the pinned DeepSeek vocabulary");
+        if(suffix) {run_suffix(model,cut,argv[4],timeout_ms,accept_ms,connections,suffix_out);return 0;}
         auto c=contract(model,cut);const auto binary=digest(read("/proc/self/exe"));receipt(role.c_str(),c,binary);
         if(prefix) {
             auto first=c.identity;first.session=1;
             check(model.configure_boundary_probe(cut,first,[](const auto &,std::string &){return true;},error),error);
             c.layout=model.boundary_layout();model.reset();
-            DeepSeekLayerClient client;check(client.connect(argv[4],c,unhex(argv[5]),timeout_ms,error),error);
-            run_generation(model,c,prompt,steps,ignore!=0,out,&client,cut);
-        } else run_generation(model,c,prompt,steps,ignore!=0,out,nullptr,cut);
+        }
+        uint64_t session_floor=1;
+        for(const auto &request:requests) {
+            check(std::filesystem::create_directory(request.out),"request evidence output directory already exists");
+            model.reset();
+            if(prefix) {
+                DeepSeekLayerClient client;check(client.connect(argv[4],c,unhex(argv[5]),timeout_ms,error),error);
+                run_generation(model,c,request.prompt,request.steps,request.ignore,request.out,&client,cut,session_floor);
+            } else run_generation(model,c,request.prompt,request.steps,request.ignore,request.out,nullptr,cut,session_floor);
+        }
         return 0;
     } catch(const std::exception &e) {std::fprintf(stderr,"E3 TCP native: %s\n",e.what());return 1;}
 }

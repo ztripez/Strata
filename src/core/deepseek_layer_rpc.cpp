@@ -160,7 +160,8 @@ bool DeepSeekLayerService::serve(int fd,int timeout_ms,std::string &error) {
                 // Consume the session before preparation: a callback can fail after
                 // partially resetting native state, so this ID cannot be reused.
                 capabilities_.last_session=identity.session;
-                if(!prepare_(identity,error)) return reject(error.empty() ? "native layer preparation failed without a reason" : error);
+                std::string preparation_error;
+                if(!prepare_(identity,preparation_error)) return reject(preparation_error.empty() ? "native layer preparation failed without a reason" : preparation_error);
                 session=std::make_unique<DeepSeekLayerSession>(capabilities_.contract.layout,identity,identity.next_layer);
                 if(!reply(R::Type::ready,R::capability_bytes(capabilities_))) return false;
                 break;

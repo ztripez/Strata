@@ -86,6 +86,22 @@ void happy() {
     check(served,server_error.c_str());check(preparations==1 && native.calls==2 && native.position==19,"TCP executed wrong number of windows");
     check(service.capabilities().last_session==7,"service did not retain session fence");
 }
+void fresh_connections() {
+    NativeMock native;int preparations=0;
+    DeepSeekLayerService service(receipt(),[&](const auto &,std::string &) {++preparations;native.position=0;return true;},std::ref(native));
+    for(uint64_t session:{7u,8u}) {
+        bool served=false;std::string why;
+        Peer peer([&](int fd){served=service.serve(fd,1000,why);});
+        DeepSeekLayerClient client;std::string e;const auto caps=receipt();
+        check(client.connect(peer.endpoint(),caps.contract,caps.binary_sha256,1000,e),e.c_str());
+        check(client.capabilities().last_session==(session==7 ? 1u:7u),"fresh connection forgot consumed session floor");
+        check(client.begin(session,e),e.c_str());auto b=capture();b.header.session=session;DeepSeekLayerResult out;
+        check(client.execute(b,1,out,e) && out.committed_position==3,"fresh native session reused prior position");
+        check(client.close(e),e.c_str());peer.finish();check(served,why.c_str());
+    }
+    check(preparations==2 && native.calls==2 && native.position==3 && service.capabilities().last_session==8,
+          "reconnected delivery failed to reset/fence native state");
+}
 void discovery_faults() {
     const auto caps=receipt();
     for(int fault=0;fault<8;++fault) {
@@ -162,6 +178,16 @@ void preparation_fence() {
         check(receive(fd.value).type==R::Type::error,"failed/reused preparation accepted");peer.finish();
     }
     check(calls==1 && native.calls==0 && service.capabilities().last_session==7,"failed preparation retried same native session");
+}
+void unexplained_preparation_failure() {
+    NativeMock native;std::string why="obsolete failure from an earlier connection";
+    DeepSeekLayerService service(receipt(),[](const auto &,std::string &) {return false;},std::ref(native));
+    Peer peer([&](int fd){check(!service.serve(fd,500,why),"unexplained native preparation accepted");});
+    std::string e;Fd fd{expert_worker_connect("127.0.0.1",peer.port,500,&e)};check(fd.value>=0,e.c_str());
+    send(fd.value,R::Type::discover,1);receive(fd.value);send(fd.value,R::Type::begin,2,begin_bytes());
+    const auto reply=receive(fd.value);peer.finish();
+    check(reply.type==R::Type::error && why=="native layer preparation failed without a reason" && native.calls==0,
+          "stale connection error hid an unexplained native preparation failure");
 }
 void response_faults() {
     const auto caps=receipt();
@@ -247,7 +273,7 @@ void framing() {
 }
 }
 int main() {
-    try {framing();happy();discovery_faults();raw_delivery_faults();preparation_fence();response_faults();transaction_deadline();
+    try {framing();happy();fresh_connections();discovery_faults();raw_delivery_faults();preparation_fence();unexplained_preparation_failure();response_faults();transaction_deadline();
         std::puts("DS4L real TCP contract/delivery/fault/deadline tests PASS; native inference remains separate");return 0;
     } catch(const std::exception &e) {std::fprintf(stderr,"%s\n",e.what());return 1;}
 }

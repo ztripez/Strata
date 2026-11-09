@@ -88,8 +88,8 @@ suffix service, an assigned prefix coordinator and a complete native reference:
 cmake --build BUILD --target deepseek_layer_tcp_test
 
 # New output directories are required; existing evidence is never overwritten.
-DS4_IQ_Q8K=1 BUILD/deepseek_layer_tcp_test --experts 6 suffix PACK 20 0.0.0.0:19170 600000 3600000 SUFFIX_OUT
-DS4_IQ_Q8K=1 BUILD/deepseek_layer_tcp_test --experts 6 prefix PACK 20 WORKER_IP:19170 WORKER_EXE_SHA256 PROMPT_IDS 128 1 PREFIX_OUT
+DS4_IQ_Q8K=1 BUILD/deepseek_layer_tcp_test --experts 6 suffix PACK 20 0.0.0.0:19170 600000 3600000 1 SUFFIX_OUT
+DS4_IQ_Q8K=1 BUILD/deepseek_layer_tcp_test --experts 6 prefix PACK 20 WORKER_IP:19170 WORKER_EXE_SHA256 600000 PROMPT_IDS 128 1 PREFIX_OUT
 DS4_IQ_Q8K=1 BUILD/deepseek_layer_tcp_test --experts 6 reference PACK PROMPT_IDS 128 1 REFERENCE_OUT
 ```
 
@@ -103,6 +103,14 @@ checks this choice against the existing native sampler for each window.
 
 The final `1` explicitly continues after EOS for long functional probes. `0`
 stops at the pinned pack's EOS token 1; logs distinguish EOS from the token limit.
+Prefix/reference commands can repeat the `PROMPT_IDS DECODE IGNORE_EOS OUT`
+group, up to sixteen requests. The model is loaded and hashed once; each group
+uses a fresh native session and a separate new output directory. Match the
+suffix connection count to the planned requests. Prefix RPC timeout is explicit.
+The coordinator consumes increasing session IDs, including across a worker
+incarnation change within that coordinator process. All group paths, bounds and
+token IDs are checked before loading.
+
 Every committed window records input IDs, position, next token and raw logits.
 The prefix also retains acknowledged DS4R records. A failed layer transaction
 aborts; it never generates a continuation from unacknowledged output.
@@ -113,7 +121,10 @@ and reads `Model::logits()`/`pos()`; the prefix callback calls the persistent TC
 client during the existing `feed()` boundary observer. Native cancellation polls
 a computation deadline; a separate process supervisor is still required to
 bound stalled device/filesystem calls. Socket and accept timeouts are separate.
-The service handles one connection in this harness, then resets and exits.
+The suffix takes an explicit connection count (1..16), resets native state after
+each connection and preserves its consumed session floor between connections.
+An aborted connection is logged and leaves a failed final status, even if a later
+fresh session succeeds. The coordinator never retries the failed request.
 
 ### Loaded artifact identity
 

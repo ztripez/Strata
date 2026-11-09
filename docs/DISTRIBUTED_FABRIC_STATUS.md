@@ -216,9 +216,13 @@ loading, TCP execution and mixed-backend quality remain separate gates.
 
 The new `deepseek_layer_partition_test` builds for CUDA and HIP. It compares a
 full reference against independently loaded prefix/suffix executors, including
-exact handoff fields, logits and both owners' persistent state. Its runtime is
-not yet qualified. It is an in-process oracle; separate-process TCP execution remains
-unqualified even if this probe passes.
+exact handoff fields, logits and both owners' persistent state. Its HIP cut20
+campaign passed at 20:50 CET: 128 decode steps through position 145, plus native
+cancellation/reset checks. This is an in-process oracle; assigned cut24 and
+separate-process TCP execution remain unqualified. Native exit was 0 and the
+controller wrote its successful acceptance ledger. The outer zsh exit-recording
+command then failed because `status` is read-only; that wrapper failure is
+retained separately in `wrapper.exit`/`wrapper-failure.txt`.
 
 ## Other unfinished work
 
@@ -260,16 +264,38 @@ source SHA manifest and raw pack metadata. This remains an expected-value
 oracle until actual native receipts match it; equal peer claims alone do not
 qualify source integrity.
 
-A frozen one-prompt, 128-token cross-host campaign is starting in
-`/var/tmp/strata-deepseek-e3-tcp-20261109/`. Lucy's assigned CUDA suffix is loading;
-Astor's HIP prefix is withheld until the assigned-only native cut20 oracle
-passes. Full-file verification, bounded startup/decode deadlines, exact source/
+A frozen one-prompt, 128-token cross-host campaign is running in
+`/var/tmp/strata-deepseek-e3-tcp-20261109/`. Lucy's assigned CUDA suffix loaded
+and is hashing its actual backing mappings. The assigned-only cut20 prerequisite
+has passed; Astor's HIP prefix will start after the suffix identity/listener
+checks pass. Full-file verification, bounded startup/decode deadlines, exact source/
 binary snapshots, token/window logs and acknowledged logits are retained.
-The assigned-only oracle in `/var/tmp/strata-deepseek-e3-partition-20261109/`
-is running with a full reference and independent prefix/suffix models. Its
-comparisons are exact so far; neither campaign has passed its final checks.
+The passed assigned-only oracle is retained in
+`/var/tmp/strata-deepseek-e3-partition-20261109/`. The cross-host campaign has not
+passed its final checks.
 
 One long prompt would still be a partial E3 result. A second distinct long
 prompt, normal EOS, native restart/loss behavior, same-backend TCP control and
 measured memory bounds remain required. E4 hybrid experts, E5 quality and the
 orchestrator/capacity/performance gates remain open.
+
+## Bounded multiple-request harness
+
+The newer harness can retain one loaded model for up to sixteen explicitly
+listed requests/connections. Each request resets native state, negotiates a fresh
+session and writes a separate new evidence directory. Worker session floors
+persist across connections; coordinator IDs never decrease within a coordinator
+process. A failed connection stays failed in the final worker status, even when
+a later fresh request succeeds. No failed inference request is retried.
+
+The new admission checks refuse duplicate output directories, excessive request
+counts and invalid deadlines/connection counts before loading. CPU real-TCP
+tests cover two successful fresh connections, reset/floor preservation and an
+unexplained preparation failure without reusing an old error string. CUDA/HIP
+builds and CPU/sanitizer receipts are separate from native multi-request runtime,
+which is NOT RUN. This change does not replace the frozen one-prompt campaign.
+
+Two distinct long functional prompts and an EOS smoke were rendered with Strata's
+pinned DeepSeek tokenizer and frozen before cross-host output was observed, in
+`/var/tmp/strata-deepseek-e3-functional-fixtures-20261109/`. Their token IDs roundtrip
+exactly. They are E3 fixtures and are excluded from the held-out E5 quality set.
