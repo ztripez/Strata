@@ -11,6 +11,15 @@ namespace strata::core {
 // Magic: "STEX" in little-endian (0x58455453u)
 inline constexpr uint32_t kExpertWorkerMagic = 0x58455453u;
 inline constexpr uint16_t kExpertWorkerVersion = 1;
+/// Expert v2 adds an explicit arithmetic policy to HELLO/CAPS. Qwen keeps v1.
+inline constexpr uint16_t kExpertWorkerArithmeticVersion = 2;
+
+/// Resolved execution arithmetic, independent of immutable model-weight bytes.
+enum class ExpertWorkerArithmetic : uint32_t {
+    NATIVE_V1 = 0,
+    DEEPSEEK_IQ_PER32 = 1,
+    DEEPSEEK_IQ_Q8K = 2,
+};
 
 enum class ExpertWorkerMsgType : uint16_t {
     HELLO = 1,
@@ -38,7 +47,7 @@ enum class ExpertWorkerErrorCode : uint32_t {
 
 struct ExpertWorkerFrameHeader {
     uint32_t magic;       // kExpertWorkerMagic
-    uint16_t version;     // kExpertWorkerVersion
+    uint16_t version;     // v1 or explicit-arithmetic v2; fixed for a session
     uint16_t msg_type;    // ExpertWorkerMsgType
     uint64_t request_id;  // monotonically increasing request id
     uint32_t payload_len; // byte length following header
@@ -81,6 +90,18 @@ struct ExpertWorkerCapsPayload {
 struct ExpertWorkerPair {
     int32_t layer;
     int32_t expert;
+};
+
+/// V2 envelope; the v1 schema and all its reserved fields remain unchanged.
+struct ExpertWorkerHelloV2 {
+    ExpertWorkerHelloPayload model{};
+    uint32_t arithmetic = 0; // ExpertWorkerArithmetic, mandatory in v2
+};
+/// V2 acknowledgement reports the worker's effective arithmetic, not a request
+/// echo. A mismatch must fail before placement is installed.
+struct ExpertWorkerCapsV2 {
+    ExpertWorkerCapsPayload model{};
+    uint32_t arithmetic = 0; // ExpertWorkerArithmetic
 };
 
 struct ExpertWorkerReadyPayload {
@@ -145,10 +166,12 @@ void expert_worker_shutdown(int fd);
 
 // Framing I/O helpers.
 bool expert_worker_send_frame(int fd, ExpertWorkerMsgType type, uint64_t req_id, const void *payload,
-                              uint32_t payload_len, std::string *err = nullptr, int timeout_ms = 5000);
+                              uint32_t payload_len, std::string *err = nullptr, int timeout_ms = 5000,
+                              uint16_t version = kExpertWorkerVersion);
 bool expert_worker_recv_frame(int fd, ExpertWorkerFrameHeader &hdr, std::vector<uint8_t> &payload,
                               std::string *err = nullptr, int timeout_ms = 5000);
-bool expert_worker_send_error(int fd, uint64_t req_id, ExpertWorkerErrorCode code, const std::string &msg);
+bool expert_worker_send_error(int fd, uint64_t req_id, ExpertWorkerErrorCode code, const std::string &msg,
+                              uint16_t version = kExpertWorkerVersion);
 
 // Placement plan file helpers.
 // Format: text file with one "layer expert" or "layer:expert" or "layer e0,e1,e2..eN" or "layer start-end" per line,

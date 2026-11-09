@@ -286,15 +286,16 @@ bool transfer(int fd, uint8_t *data, size_t size, bool send, Deadline deadline, 
 } // namespace
 
 bool expert_worker_send_frame(int fd, ExpertWorkerMsgType type, uint64_t req_id, const void *payload,
-                              uint32_t payload_len, std::string *err, int timeout_ms) {
+                              uint32_t payload_len, std::string *err, int timeout_ms, uint16_t version) {
 #if !defined(_WIN32)
-    if (payload_len > kExpertWorkerMaxPayloadBytes || (payload_len && !payload) || timeout_ms <= 0) {
+    if (payload_len > kExpertWorkerMaxPayloadBytes || (payload_len && !payload) || timeout_ms <= 0 ||
+        (version != kExpertWorkerVersion && version != kExpertWorkerArithmeticVersion)) {
         if (err)
             *err = "invalid expert worker frame length or deadline";
         return false;
     }
     const ExpertWorkerFrameHeader hdr{
-        kExpertWorkerMagic, kExpertWorkerVersion, static_cast<uint16_t>(type), req_id, payload_len, 0};
+        kExpertWorkerMagic, version, static_cast<uint16_t>(type), req_id, payload_len, 0};
     auto bytes = expert_wire_encode(hdr);
     if (payload_len) {
         const auto *p = static_cast<const uint8_t *>(payload);
@@ -316,7 +317,8 @@ bool expert_worker_recv_frame(int fd, ExpertWorkerFrameHeader &hdr, std::vector<
     std::vector<uint8_t> bytes(24);
     if (!transfer(fd, bytes.data(), bytes.size(), false, deadline, err))
         return false;
-    if (!expert_wire_decode(bytes, hdr) || hdr.magic != kExpertWorkerMagic || hdr.version != kExpertWorkerVersion ||
+    if (!expert_wire_decode(bytes, hdr) || hdr.magic != kExpertWorkerMagic ||
+        (hdr.version != kExpertWorkerVersion && hdr.version != kExpertWorkerArithmeticVersion) ||
         hdr.flags != 0 || hdr.payload_len > kExpertWorkerMaxPayloadBytes || hdr.msg_type < 1 || hdr.msg_type > 9) {
         if (err)
             *err = "invalid expert worker frame magic, version, type, flags or length";
@@ -331,13 +333,13 @@ bool expert_worker_recv_frame(int fd, ExpertWorkerFrameHeader &hdr, std::vector<
 #endif
 }
 
-bool expert_worker_send_error(int fd, uint64_t req_id, ExpertWorkerErrorCode code, const std::string &msg) {
+bool expert_worker_send_error(int fd, uint64_t req_id, ExpertWorkerErrorCode code, const std::string &msg, uint16_t version) {
     ExpertWorkerErrorPayload ep{};
     ep.code = static_cast<uint32_t>(code);
     const size_t n = std::min(msg.size(), sizeof(ep.message) - 1);
     ep.detail_len = static_cast<uint32_t>(n);
     std::memcpy(ep.message, msg.data(), n);
-    return expert_worker_send_message(fd, ExpertWorkerMsgType::ERROR_MSG, req_id, ep, nullptr);
+    return expert_worker_send_message(fd, ExpertWorkerMsgType::ERROR_MSG, req_id, ep, nullptr, 5000, version);
 }
 
 bool load_expert_placement_plan(const std::string &path, int n_layers, int n_experts,

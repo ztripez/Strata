@@ -614,3 +614,32 @@ running for those sessions. The harness refuses to overwrite an evidence directo
 Only the direct remote case is suitable for performance comparison; fault relays are
 correctness probes. The unavailable case must fail setup. Zero ownership must preserve
 tokens. Remote token deviations are recorded and need separate numerical/quality review.
+
+## Explicit arithmetic in expert protocol v2
+
+Qwen keeps the existing v1 frames, payloads and defaults. The DeepSeek adapter
+uses v2 to distinguish immutable model identity from execution arithmetic.
+V2 wraps the unchanged HELLO/CAPS fields with one explicit `uint32` policy:
+`1` is DeepSeek i-quant per-32 activation rounding; `2` is its existing
+`DS4_IQ_Q8K=1` activation rounding. Reserved v1 fields remain zero. The worker
+reports its resolved kernel policy, and the primary checks it before installing
+placement. Every later frame retains the negotiated version. There is no silent
+version downgrade or arithmetic fallback.
+
+GPU-free tests cover both policies, mismatched policy, wrong-version CAPS and
+RESULT, and reconnecting one executor across versions. V1 golden bytes still
+pass. Real Qwen default and tiered parity fixtures pass with a v1 client and the
+updated worker. These checks establish the protocol contract, not DeepSeek model
+quality. The DeepSeek adapter remains a working-tree draft pending E1 arithmetic
+qualification and the later layer/quality gates.
+
+The first default-policy DeepSeek case matched its cross-vendor GPU oracle
+(relative L2 `3.67e-8`) but failed the CPU oracle (maximum absolute error
+`0.0565`, limit `0.002`). Both nodes hashed the same exact GGUF mappings.
+The stock GPU and CPU activation-rounding paths differ by default; the next
+qualification selects the existing Q8_K mode explicitly on both GPU processes.
+No weights, model quantization, test inputs or tolerances are changed. This is
+a new declared arithmetic configuration, not a pass for the failed default.
+Its same-day raw results are retained under
+`/var/tmp/strata-deepseek-e1-20261109/retry1/`; the Q8_K campaign is under
+`/var/tmp/strata-deepseek-e1-q8k-20261109/`.

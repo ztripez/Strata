@@ -22,6 +22,8 @@ template <class A, class T> void expert_wire_fields(A &a, T &v) {
         a(v.model_fingerprint, v.model_sha256, v.n_embd, v.n_ff, v.n_layers, v.n_experts, v.top_k, v.dtype,
           v.endianness, v.backend_id, v.max_tokens, v.max_slots, v.status, v.reserved, v.vram_free_bytes,
           v.vram_total_bytes, v.device_name);
+    else if constexpr (std::is_same_v<T, ExpertWorkerHelloV2> || std::is_same_v<T, ExpertWorkerCapsV2>)
+        a(v.model, v.arithmetic);
     else if constexpr (std::is_same_v<T, ExpertWorkerPair>)
         a(v.layer, v.expert);
     else if constexpr (std::is_same_v<T, ExpertWorkerReadyPayload>)
@@ -109,9 +111,9 @@ template <class T> bool expert_wire_decode(const std::vector<uint8_t> &bytes, T 
 }
 template <class T>
 bool expert_worker_send_message(int fd, ExpertWorkerMsgType type, uint64_t id, const T &v, std::string *err,
-                                int timeout_ms = 5000) {
+                                int timeout_ms = 5000, uint16_t version = kExpertWorkerVersion) {
     auto bytes = expert_wire_encode(v);
-    return expert_worker_send_frame(fd, type, id, bytes.data(), static_cast<uint32_t>(bytes.size()), err, timeout_ms);
+    return expert_worker_send_frame(fd, type, id, bytes.data(), static_cast<uint32_t>(bytes.size()), err, timeout_ms, version);
 }
 
 } // namespace strata::core

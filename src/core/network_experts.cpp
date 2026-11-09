@@ -47,10 +47,11 @@ void NetworkExpertExecutor::close() {
 bool NetworkExpertExecutor::connect_and_handshake(const std::string &endpoint, uint32_t n_layers, uint32_t total_layers,
                                                   uint32_t n_experts, uint32_t n_embd, uint32_t n_ff, uint32_t top_k,
                                                   const std::array<uint8_t, 32> &model_sha256, int timeout_ms,
-                                                  std::string &err) {
+                                                  std::string &err, ExpertWorkerArithmetic arithmetic) {
     close();
     if (!n_layers || total_layers < n_layers || !n_experts || !n_embd || !n_ff || !top_k || top_k > 16 ||
-        timeout_ms <= 0 || timeout_ms > 600000 || static_cast<uint64_t>(total_layers) * n_experts > 1000000) {
+        timeout_ms <= 0 || timeout_ms > 600000 || static_cast<uint64_t>(total_layers) * n_experts > 1000000 ||
+        static_cast<uint32_t>(arithmetic) > static_cast<uint32_t>(ExpertWorkerArithmetic::DEEPSEEK_IQ_Q8K)) {
         err = "invalid expert worker geometry or timeout (1..600000 ms)";
         return false;
     }
@@ -62,6 +63,7 @@ bool NetworkExpertExecutor::connect_and_handshake(const std::string &endpoint, u
     }
     endpoint_ = endpoint;
     timeout_ms_ = timeout_ms;
+    protocol_version_ = arithmetic == ExpertWorkerArithmetic::NATIVE_V1 ? kExpertWorkerVersion : kExpertWorkerArithmeticVersion;
     n_layers_ = n_layers;
     total_layers_ = total_layers;
     n_experts_ = n_experts;
@@ -87,13 +89,24 @@ bool NetworkExpertExecutor::connect_and_handshake(const std::string &endpoint, u
     const uint64_t rid = next_req_id_++;
     ExpertWorkerFrameHeader hdr{};
     std::vector<uint8_t> payload;
-    if (!expert_worker_send_message(fd_, ExpertWorkerMsgType::HELLO, rid, hp, &err, timeout_ms) ||
+    const bool sent = protocol_version_ == kExpertWorkerVersion
+        ? expert_worker_send_message(fd_, ExpertWorkerMsgType::HELLO, rid, hp, &err, timeout_ms)
+        : expert_worker_send_message(fd_, ExpertWorkerMsgType::HELLO, rid,
+              ExpertWorkerHelloV2{hp,static_cast<uint32_t>(arithmetic)}, &err, timeout_ms, protocol_version_);
+    if (!sent ||
         !expert_worker_recv_frame(fd_, hdr, payload, &err, timeout_ms)) {
         close();
         return false;
     }
-    if (hdr.request_id != rid || hdr.msg_type != static_cast<uint16_t>(ExpertWorkerMsgType::CAPS) ||
-        !expert_wire_decode(payload, caps_) || caps_.status != 0 || caps_.model_sha256 != model_sha256 ||
+    bool decoded = false;
+    uint32_t peer_arithmetic = 0;
+    if (protocol_version_ == kExpertWorkerVersion) decoded = expert_wire_decode(payload, caps_);
+    else {
+        ExpertWorkerCapsV2 v2{};
+        decoded = expert_wire_decode(payload,v2); caps_ = v2.model; peer_arithmetic = v2.arithmetic;
+    }
+    if (hdr.version != protocol_version_ || hdr.request_id != rid || hdr.msg_type != static_cast<uint16_t>(ExpertWorkerMsgType::CAPS) ||
+        !decoded || peer_arithmetic != static_cast<uint32_t>(arithmetic) || caps_.status != 0 || caps_.model_sha256 != model_sha256 ||
         caps_.model_fingerprint != hp.model_fingerprint || caps_.n_embd != n_embd || caps_.n_ff != n_ff ||
         caps_.n_layers != n_layers || caps_.n_experts != n_experts || caps_.top_k != top_k || caps_.dtype != 0 ||
         caps_.endianness != hp.endianness || caps_.reserved != 0 || !caps_.max_tokens || caps_.backend_id > 2 ||
@@ -109,7 +122,7 @@ bool NetworkExpertExecutor::connect_and_handshake(const std::string &endpoint, u
         };
         err = "worker CAPS rejected: local SHA-256=" + hex(model_sha256) +
               ", worker SHA-256=" + hex(caps_.model_sha256) +
-              "; check model bytes, geometry, request ID and capabilities";
+              "; check model bytes, geometry, arithmetic policy, protocol version, request ID and capabilities";
         close();
         return false;
     }
@@ -156,12 +169,12 @@ bool NetworkExpertExecutor::install_plan(const std::vector<ExpertWorkerPair> &pa
     ExpertWorkerFrameHeader hdr{};
     std::vector<uint8_t> payload;
     if (!expert_worker_send_frame(fd_, ExpertWorkerMsgType::INSTALL_PLAN, rid, w.bytes.data(),
-                                  static_cast<uint32_t>(w.bytes.size()), &err, timeout_ms_) ||
+                                  static_cast<uint32_t>(w.bytes.size()), &err, timeout_ms_, protocol_version_) ||
         !expert_worker_recv_frame(fd_, hdr, payload, &err, timeout_ms_)) {
         healthy_.store(false);
         return false;
     }
-    if (hdr.request_id != rid || hdr.msg_type != static_cast<uint16_t>(ExpertWorkerMsgType::READY) ||
+    if (hdr.version != protocol_version_ || hdr.request_id != rid || hdr.msg_type != static_cast<uint16_t>(ExpertWorkerMsgType::READY) ||
         !expert_wire_decode(payload, ready_) || ready_.status != 0 || ready_.loaded_count != pairs.size()) {
         err = "worker did not acknowledge the complete requested placement";
         healthy_.store(false);
@@ -231,10 +244,10 @@ void NetworkExpertExecutor::io_loop() {
                 std::chrono::duration_cast<std::chrono::milliseconds>(deadline - Clock::now()).count());
         };
         bool ok = expert_worker_send_frame(fd_, ExpertWorkerMsgType::EXECUTE, rid, tx_buf_.data(),
-                                           static_cast<uint32_t>(tx_buf_.size()), &err, remaining()) &&
+                                           static_cast<uint32_t>(tx_buf_.size()), &err, remaining(), protocol_version_) &&
                   expert_worker_recv_frame(fd_, rx_hdr_, rx_buf_, &err, remaining());
         if (ok &&
-            (rx_hdr_.request_id != rid || rx_hdr_.msg_type != static_cast<uint16_t>(ExpertWorkerMsgType::RESULT))) {
+            (rx_hdr_.version != protocol_version_ || rx_hdr_.request_id != rid || rx_hdr_.msg_type != static_cast<uint16_t>(ExpertWorkerMsgType::RESULT))) {
             ok = false;
             err = "unexpected worker response or stale request ID";
         }

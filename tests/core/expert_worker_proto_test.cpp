@@ -28,6 +28,9 @@ void check(bool ok, const char *why) {
 enum class Fault {
     none,
     identity,
+    arithmetic,
+    caps_version,
+    result_version,
     caps_id,
     ready_count,
     stale,
@@ -57,7 +60,12 @@ void mock_session(int fd, Fault fault, bool nodelay = true) {
         const auto type = static_cast<ExpertWorkerMsgType>(hdr.msg_type);
         if (type == ExpertWorkerMsgType::HELLO) {
             ExpertWorkerHelloPayload hp{};
-            check(expert_wire_decode(bytes, hp), "mock HELLO decode");
+            uint32_t arithmetic=0;
+            if (hdr.version == kExpertWorkerArithmeticVersion) {
+                ExpertWorkerHelloV2 hello{};
+                check(expert_wire_decode(bytes,hello),"mock HELLO v2 decode");
+                hp=hello.model; arithmetic=hello.arithmetic;
+            } else check(expert_wire_decode(bytes, hp), "mock HELLO decode");
             ExpertWorkerCapsPayload cp{};
             cp.model_fingerprint = compute_model_fingerprint(L, E, N, FF);
             cp.model_sha256 = identity;
@@ -73,8 +81,11 @@ void mock_session(int fd, Fault fault, bool nodelay = true) {
             cp.status = hp.model_sha256 == identity ? 0 : 2;
             if (fault == Fault::identity)
                 cp.model_sha256[0] ^= 1;
-            expert_worker_send_message(fd, ExpertWorkerMsgType::CAPS, hdr.request_id + (fault == Fault::caps_id), cp,
-                                       &err);
+            if (hdr.version == kExpertWorkerArithmeticVersion)
+                expert_worker_send_message(fd,ExpertWorkerMsgType::CAPS,hdr.request_id,
+                    ExpertWorkerCapsV2{cp,arithmetic+(fault==Fault::arithmetic)},&err,1500,hdr.version);
+            else expert_worker_send_message(fd, ExpertWorkerMsgType::CAPS, hdr.request_id + (fault == Fault::caps_id), cp,
+                                       &err,1500,fault==Fault::caps_version ? kExpertWorkerArithmeticVersion : hdr.version);
         } else if (type == ExpertWorkerMsgType::INSTALL_PLAN) {
             ExpertWireReader r{bytes};
             uint32_t n = 0;
@@ -88,7 +99,7 @@ void mock_session(int fd, Fault fault, bool nodelay = true) {
             check(r.done(), "mock plan decode");
             ExpertWorkerReadyPayload rp{};
             rp.loaded_count = static_cast<uint32_t>(held.size()) + (fault == Fault::ready_count);
-            expert_worker_send_message(fd, ExpertWorkerMsgType::READY, hdr.request_id, rp, &err);
+            expert_worker_send_message(fd, ExpertWorkerMsgType::READY, hdr.request_id, rp, &err,1500,hdr.version);
         } else if (type == ExpertWorkerMsgType::EXECUTE) {
             if (fault == Fault::disconnect)
                 break;
@@ -132,9 +143,10 @@ void mock_session(int fd, Fault fault, bool nodelay = true) {
             if (fault == Fault::short_payload)
                 w.bytes.pop_back();
             expert_worker_send_frame(fd, ExpertWorkerMsgType::RESULT, hdr.request_id + (fault == Fault::stale),
-                                     w.bytes.data(), w.bytes.size(), &err);
+                                     w.bytes.data(), w.bytes.size(), &err,1500,
+                                     fault==Fault::result_version ? (hdr.version==1?2:1) : hdr.version);
         } else if (type == ExpertWorkerMsgType::PING) {
-            expert_worker_send_frame(fd, ExpertWorkerMsgType::PONG, hdr.request_id, nullptr, 0, &err);
+            expert_worker_send_frame(fd, ExpertWorkerMsgType::PONG, hdr.request_id, nullptr, 0, &err,1500,hdr.version);
         } else
             break;
     }
@@ -229,12 +241,12 @@ void executor_tests() {
         check(net.install_plan({}, err), err.c_str());
         check(!net.holds(0, 3) && !net.holds_layer(0) && !net.has_any_owned(), "zero plan owns expert");
     }
-    for (auto fault : {Fault::identity, Fault::caps_id, Fault::ready_count, Fault::stale, Fault::layer, Fault::count,
+    for (auto fault : {Fault::identity, Fault::caps_id, Fault::caps_version, Fault::result_version, Fault::ready_count, Fault::stale, Fault::layer, Fault::count,
                        Fault::coverage, Fault::nan, Fault::short_payload, Fault::disconnect, Fault::timeout}) {
         Server server(fault);
         NetworkExpertExecutor net;
         const bool connected = connect(net, server.endpoint(), 100, err);
-        if (fault == Fault::identity || fault == Fault::caps_id) {
+        if (fault == Fault::identity || fault == Fault::caps_id || fault == Fault::caps_version) {
             check(!connected, "bad CAPS accepted");
             continue;
         }
@@ -253,6 +265,30 @@ void executor_tests() {
         check(out[0] == 123 && mask[0] == 99, "failed result published");
         check(Clock::now() - t0 < std::chrono::seconds(1), "deadline exceeded");
     }
+    for (const auto policy : {ExpertWorkerArithmetic::DEEPSEEK_IQ_PER32,ExpertWorkerArithmetic::DEEPSEEK_IQ_Q8K}) {
+        Server server;
+        NetworkExpertExecutor v2;
+        check(v2.connect_and_handshake(server.endpoint(),L,L,E,N,FF,K,identity,1000,err,policy),err.c_str());
+        check(v2.install_plan(plan,err),err.c_str());
+        valid_execution(v2,2);
+    }
+    {
+        Server server(Fault::arithmetic);
+        NetworkExpertExecutor v2;
+        check(!v2.connect_and_handshake(server.endpoint(),L,L,E,N,FF,K,identity,1000,err,
+                                      ExpertWorkerArithmetic::DEEPSEEK_IQ_Q8K),"accepted mismatched arithmetic");
+        check(!v2.has_any_owned(),"arithmetic mismatch published ownership");
+    }
+    {
+        Server server(Fault::result_version);
+        NetworkExpertExecutor v2;
+        check(v2.connect_and_handshake(server.endpoint(),L,L,E,N,FF,K,identity,1000,err,
+                                      ExpertWorkerArithmetic::DEEPSEEK_IQ_Q8K),err.c_str());
+        check(v2.install_plan(plan,err),err.c_str());
+        std::vector<float> acts(N*3,1), out(N*3,123);
+        check(!v2.execute_sync(0,3,acts.data(),assignments,out.data(),nullptr,&err),"accepted downgraded v2 RESULT");
+        check(out[0]==123,"downgraded result mutated output");
+    }
     // Same executor reconnects cleanly; old ownership must never survive.
     NetworkExpertExecutor net;
     for (int i = 0; i < 2; ++i) {
@@ -262,6 +298,14 @@ void executor_tests() {
         check(net.install_plan(plan, err), err.c_str());
         valid_execution(net, 1);
         net.close();
+    }
+    for (const auto policy : {ExpertWorkerArithmetic::DEEPSEEK_IQ_Q8K,ExpertWorkerArithmetic::NATIVE_V1,
+                              ExpertWorkerArithmetic::DEEPSEEK_IQ_PER32}) {
+        Server server;
+        check(net.connect_and_handshake(server.endpoint(),L,L,E,N,FF,K,identity,1000,err,policy),err.c_str());
+        check(!net.has_any_owned(),"old ownership survived a version change");
+        check(net.install_plan(plan,err),err.c_str());
+        valid_execution(net,1); net.close();
     }
 }
 void framing_tests() {
@@ -274,6 +318,14 @@ void framing_tests() {
           "wire assignment golden bytes");
     ExpertWorkerAssignment b{};
     check(expert_wire_decode(bytes, b) && b.expert_id == -7 && std::signbit(b.weight), "float round trip");
+    ExpertWorkerHelloPayload hello{};
+    hello.model_fingerprint=42; hello.top_k=6;
+    const auto v1=expert_wire_encode(hello);
+    auto v2=expert_wire_encode(ExpertWorkerHelloV2{hello,2});
+    check(v2.size()==v1.size()+4 && std::equal(v1.begin(),v1.end(),v2.begin()) &&
+          v2[v1.size()]==2 && v2[v1.size()+1]==0 && v2[v1.size()+2]==0 && v2[v1.size()+3]==0,
+          "v2 explicit policy envelope changed v1 fields");
+    check(!expert_wire_decode(v2,hello),"v1 decoder accepted a v2 envelope");
     std::string err;
     for (int offset : {0, 4, 6, 16, 20}) {
         int f[2];

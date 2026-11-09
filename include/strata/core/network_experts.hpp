@@ -52,7 +52,8 @@ class NetworkExpertExecutor {
     // Connect to worker and verify model geometry (HELLO / CAPS).
     bool connect_and_handshake(const std::string &endpoint, uint32_t n_layers, uint32_t total_layers,
                                uint32_t n_experts, uint32_t n_embd, uint32_t n_ff, uint32_t top_k,
-                               const std::array<uint8_t, 32> &model_sha256, int timeout_ms, std::string &err);
+                               const std::array<uint8_t, 32> &model_sha256, int timeout_ms, std::string &err,
+                               ExpertWorkerArithmetic arithmetic = ExpertWorkerArithmetic::NATIVE_V1);
 
     // Send INSTALL_PLAN and wait for READY. Marks acknowledged (layer, expert) pairs as remote-owned.
     bool install_plan(const std::vector<ExpertWorkerPair> &pairs, std::string &err);
@@ -124,6 +125,7 @@ class NetworkExpertExecutor {
     int fd_ = -1;
     std::string endpoint_;
     int timeout_ms_ = 5000;
+    uint16_t protocol_version_ = kExpertWorkerVersion;
     uint32_t n_layers_ = 0;
     uint32_t total_layers_ = 0;
     uint32_t n_experts_ = 0;
