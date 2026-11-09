@@ -132,7 +132,12 @@ same exact mapping digest above; worker, oracle and driver exited 0.
 
 Evidence: `/var/tmp/strata-deepseek-e1-q8k-20261109/`, including raw logs,
 `forward-summary.json`, frozen source/binary hashes and the coverage correction.
-The reverse direction (HIP worker, CUDA/CPU oracle) is running. These are bounded
+The reverse direction (HIP worker, CUDA/CPU oracle) also passed all 48 cases,
+960 remote assignments and zero fallbacks. Its worst GPU relative L2 was
+`0.000662` and worst CPU maximum absolute error was `0.00165`; the same frozen
+limits and cosine checks passed. Arithmetic mismatch was rejected before READY
+in both directions. Reverse worker and oracle exited 0; raw evidence and
+`reverse/summary.json` are retained beside the forward run. These are bounded
 expert results, not full-model output-quality, failure-recovery or speed passes.
 Every later Q8_K baseline and participant must use and report the same arithmetic.
 
@@ -150,6 +155,38 @@ between them, and compares exact logits, token histories, carry counts and owned
 attention state. Its runtime pilot has not run. Both instances still load full
 dense weights; assigned-only loading and separate-process network execution
 remain E3 work. See [the probe contract](DEEPSEEK_LAYER_STATE.md#native-executor-probe).
+
+## E3 assigned-only allocation probe
+
+The first opt-in range loader has load-only receipts for the proposed cut 20.
+It uses the existing native mapped CPU experts, with six experts per token,
+synchronous windows, no expert cache/RAM store, no DSpark and no vision.
+
+- Astor loaded `[0,20)`, including the host embedding table and both Engram
+  layers, with no output head. Measured dense-weight allocations were
+  2,814,286,336 bytes (2.62 GiB); loaded process RSS was 1,802,092 KiB.
+- Lucy loaded `[20,40)`, including the output head, without the embedding table.
+  Measured dense-weight allocations were 3,047,921,152 bytes (2.84 GiB); loaded
+  process RSS was 716,904 KiB. The device reported 3,145,859,072 bytes (2.93 GiB)
+  free after loading. This is global device free memory with desktop apps present.
+- Each process emitted 40 per-layer receipts. Its 20 unowned layers had zero
+  dense-weight, window-ring and expert-arena bytes. Owned expert arenas were
+  also zero: each half's 7,680 experts stayed on the native mapped CPU path.
+- Unsupported ranges/configurations, execution before session configuration,
+  full-model checkpoint/slot calls and checkpointed feed were refused. Reset and
+  destruction completed; both load probes exited 0.
+
+Evidence: `/var/tmp/strata-deepseek-e3-range-20261109/`, including exact source
+and binary hashes, commands, raw per-layer receipts and machine summaries.
+Expert qualification overlapped the loads; loading durations and free-memory
+deltas are not paired performance measurements. OS file cache is separate from
+process RSS/PSS. The loader warms owned experts through the existing policy;
+this is not a new SSD cache or another paging implementation.
+
+These receipts establish that both assigned halves loaded independently.
+They do not establish connected inference, exact state replay, numerical
+quality, five-token/second usability, C1/C2 capacity acceptance or speed.
+Astor's full seven-file checksum pass is running before the queued E2 pilot.
 
 ## Other unfinished work
 

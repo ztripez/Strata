@@ -188,3 +188,20 @@ the before/after device-memory readings, process RSS/PSS and backing-file I/O.
 Read-only mappings and metadata access are distinct from resident weight pages;
 report them separately. These are implementation and measurement requirements,
 not evidence that assigned-only loading already works.
+
+The initial experimental implementation now exposes `Options::layer_begin`
+and `layer_end` when network support is built. Their default retains the complete
+loader. The range probe accepts `[0,20/24)` or `[20/24,40)` with one synchronous
+GPU, six experts, mapped CPU experts and disabled expert cache/store, DSpark,
+vision and chunk prefill. It refuses a boundary role/cut that differs from the
+loaded range. A prefix must request zero local logits and hand its capture to
+its observer; a suffix accepts `replay_boundary()` only. Native all-layer slots,
+checkpoints and checkpointed feed are unsupported and refused.
+
+`deepseek_layer_range_load_test PACK BEGIN END` checks the loader's per-layer
+allocation invariant and these API rejections. Cut-20 load-only probes exited 0
+on Astor `[0,20)` and Lucy `[20,40)`. Their unowned layers reported zero weights,
+window rings and expert arenas. Full raw receipts and the measurement limits are
+in the [fabric checkpoint](DISTRIBUTED_FABRIC_STATUS.md#e3-assigned-only-allocation-probe).
+This is not replay or connected-inference acceptance. The cut-24 range loader has
+build evidence only; its real allocation and cross-cut state tests remain open.

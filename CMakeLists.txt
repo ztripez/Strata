@@ -1068,12 +1068,14 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
       # inherit its complete build contract rather than maintaining another list.
       get_target_property(_ds4_replay_sources strata-dsv41 SOURCES)
       list(REMOVE_ITEM _ds4_replay_sources src/dsv41/ds4_main.cpp)
-      add_executable(deepseek_layer_replay_test EXCLUDE_FROM_ALL tests/dsv41/layer_replay_test.cpp ${_ds4_replay_sources})
-      target_include_directories(deepseek_layer_replay_test PRIVATE
-        "$<TARGET_PROPERTY:strata-dsv41,INCLUDE_DIRECTORIES>" ${CMAKE_CURRENT_SOURCE_DIR}/src/dsv41)
-      target_compile_definitions(deepseek_layer_replay_test PRIVATE "$<TARGET_PROPERTY:strata-dsv41,COMPILE_DEFINITIONS>")
-      target_compile_options(deepseek_layer_replay_test PRIVATE "$<TARGET_PROPERTY:strata-dsv41,COMPILE_OPTIONS>")
-      target_link_libraries(deepseek_layer_replay_test PRIVATE "$<TARGET_PROPERTY:strata-dsv41,LINK_LIBRARIES>")
+      foreach(_ds4_probe IN ITEMS layer_replay_test layer_range_load_test)
+        add_executable(deepseek_${_ds4_probe} EXCLUDE_FROM_ALL tests/dsv41/${_ds4_probe}.cpp ${_ds4_replay_sources})
+        target_include_directories(deepseek_${_ds4_probe} PRIVATE
+          "$<TARGET_PROPERTY:strata-dsv41,INCLUDE_DIRECTORIES>" ${CMAKE_CURRENT_SOURCE_DIR}/src/dsv41)
+        target_compile_definitions(deepseek_${_ds4_probe} PRIVATE "$<TARGET_PROPERTY:strata-dsv41,COMPILE_DEFINITIONS>")
+        target_compile_options(deepseek_${_ds4_probe} PRIVATE "$<TARGET_PROPERTY:strata-dsv41,COMPILE_OPTIONS>")
+        target_link_libraries(deepseek_${_ds4_probe} PRIVATE "$<TARGET_PROPERTY:strata-dsv41,LINK_LIBRARIES>")
+      endforeach()
     endif()
     # the GGUF kernels against a double-precision reference, the PCIe lane's streamed experts against the VRAM ones' bit for
     # bit (--lane), and the packed KV caches against the BF16 rows (needs a GPU, no model; built by name)

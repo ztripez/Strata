@@ -841,6 +841,7 @@ SkipCount g_skip_count;
 
 struct Layer {
     int il = 0, dev = 0, ratio = 0;
+    size_t loaded_weight_bytes = 0; // measured load_dense allocations, not the placement estimate
     // its group (tensor parallel: nm members, each a copy of the device state in mates, member mi's share of the
     // heads, of wo_a's groups, of wo_b's rows and of the FFNs: gate / up columns, down rows; its part of an expert
     // laid out as hlay, hblob bytes - the host state, the CPU lane and the full blob layout stay with member 0)
@@ -1056,6 +1057,31 @@ struct WinPlan {
 // ------------------------------------------------------------------ the model
 struct Model::Impl {
     Options o;
+    bool layer_range() const {
+#if defined(STRATA_NETWORK_EXPERTS)
+        return o.layer_begin != 0 || o.layer_end != -1;
+#else
+        return false;
+#endif
+    }
+    bool owns_layer(int il) const {
+#if defined(STRATA_NETWORK_EXPERTS)
+        if (layer_range()) return il >= o.layer_begin && il < o.layer_end;
+#else
+        (void)il;
+#endif
+        return true;
+    }
+    int layer_limit() const {
+#if defined(STRATA_NETWORK_EXPERTS)
+        if (layer_range()) return o.layer_end;
+#endif
+        return g.nl;
+    }
+    bool owns_engram() const {
+        for (const int il : g.eg_layers) if (owns_layer(il)) return true;
+        return false;
+    }
 #if defined(STRATA_NETWORK_EXPERTS)
     std::unique_ptr<strata::core::NetworkExpertExecutor> net_worker;
     std::shared_ptr<strata::GgufModel> net_model;
@@ -2732,6 +2758,19 @@ struct Model::Impl {
             err = o.pack + "/ds4.txt: incomplete geometry";
             return false;
         }
+#if defined(STRATA_NETWORK_EXPERTS)
+        if (layer_range() && (g.nl != 40 || !pk.gguf ||
+            !((o.layer_begin == 0 && (o.layer_end == 20 || o.layer_end == 24)) ||
+              ((o.layer_begin == 20 || o.layer_begin == 24) && o.layer_end == 40)) ||
+            o.gpus.size() != 1 || o.tp != 1 || o.threads || !sync_decode ||
+            o.seqs != 1 || o.prefill_chunk != 0 || o.vision || o.dspark || o.dspark_auto ||
+            o.experts != 6 || o.vram_experts_auto || o.vram_experts != 0 || o.expert_cache ||
+            o.ssd_cache_gb != 0 || o.mmap_experts != 1 || !o.expert_worker.empty() ||
+            !lane_env_off() || disk_skip_w > 0 || ram_skip_w > 0)) {
+            err = "assigned-layer probe requires cut 20/24, one synchronous GPU, explicit six experts, mapped CPU experts, --prefill-chunk 0, DS4_STREAM=0, no cache/store/network/skip/vision/DSpark";
+            return false;
+        }
+#endif
         if (g.hd != 512 || g.ix_hd != 128 || g.k_exp > 8 || g.hc > 8) {
             err = "geometry not covered (head_dim " + std::to_string(g.hd) + ", index_head_dim " +
                   std::to_string(g.ix_hd) + ", experts per token " + std::to_string(g.k_exp) + ")";
@@ -2997,6 +3036,12 @@ struct Model::Impl {
             if (!expert_layout(l, err)) return false;
         }
 
+        if (layer_range()) {
+            for (const Layer& l : L)
+                if (l.k_exp != 6) { err = "assigned-layer effective expert count is not six"; return false; }
+            if (store_gb() != 0) { err = "assigned-layer probe requires an effective zero RAM-store budget"; return false; }
+        }
+
         // A layer whose experts the chunk path's tile GEMM cannot take (IQ1_M on Metal today) would be streamed to the
         // GPU for every prompt and stop in "kernel launch with no Metal dispatch".  Prompts then run in windows of 16,
         // which is slower but correct; say so instead of failing at the first prompt.
@@ -3031,7 +3076,7 @@ struct Model::Impl {
             b += (size_t) g.win * win_rb() + (2u << 20);
             l.dense_bytes = b;
         }
-        const size_t head_b = mat_bytes("head") + (size_t) g.vocab * 4 + (16u << 20);
+        const size_t head_b = owns_layer(g.nl-1) ? mat_bytes("head") + (size_t) g.vocab * 4 + (16u << 20) : 0;
         const size_t per_dev_fixed = (size_t) o.reserve_mib << 20;
         const size_t kv_per_src_dev = 0;   // counted after the split
         (void) kv_per_src_dev;
@@ -3140,7 +3185,7 @@ struct Model::Impl {
             int first = -1, last = -1;
             bool whole = true;
             for (const Layer& l : L) {
-                if (l.dev != (int) di) continue;
+                if (l.dev != (int) di || !owns_layer(l.il)) continue;
                 whole = whole && groups[(size_t) l.grp].mem.size() == 1;
                 need += (double) l.dense_bytes;
                 if (!l.mtp) {
@@ -3249,6 +3294,7 @@ struct Model::Impl {
             s.ik.assign(devs.size(), nullptr);
         }
         for (const Layer& l0 : L)
+          if (owns_layer(l0.il))
             for (int m = 0; m < l0.nm; ++m) {
                 const Layer& l = member(l0, m);
                 if (l.src >= 0) {
@@ -3295,13 +3341,13 @@ struct Model::Impl {
             d.attn_scr.max_t = kAttnScratchT;
             d.attn_scr.cap = (int) topk_stride();
             if (!dalloc(d, d.attn_scr.rows, (size_t) kAttnScratchT * topk_stride() * g.hd, err)) return false;
-            if (!g.eg_layers.empty()) {
+            if (owns_engram()) {
                 const int cols = (pk.eg_ngram - 1) * pk.eg_heads;
                 ok = dalloc(d, d.eg_rows, W * cols * (pk.eg_hd + pk.eg_hd / 32), err) &&
                      dalloc(d, d.eg_x, W * cols * pk.eg_hd, err) && dalloc(d, d.eg_kv, W * (g.hc + 1) * D, err);
                 if (!ok) return false;
             }
-            if ((int) di == head_dev && !dalloc(d, d.logits, (size_t) kWin * g.vocab, err)) return false;
+            if (owns_layer(g.nl-1) && (int) di == head_dev && !dalloc(d, d.logits, (size_t) kWin * g.vocab, err)) return false;
             if (!halloc(d.bounce, bounce_bytes(), err)) return false;
             if (!dalloc(d, d.xcnt, 4, err) || !dalloc(d, d.hccnt, kWin, err) || !hmap(d.hand, bounce_bytes(), err) || !hmap(d.hand_flag, 32, err) ||
                 !dalloc(d, d.grp_ptr, P, err) || !dalloc(d, d.grp_start, P + 1, err) || !dalloc(d, d.grp_ent, P, err) ||
@@ -3316,6 +3362,7 @@ struct Model::Impl {
             CK(cudaMemcpy(d.freqs_win, freqs_win.data(), freqs_win.size() * 4, cudaMemcpyHostToDevice));
             CK(cudaMemcpy(d.freqs_comp, freqs_comp.data(), freqs_comp.size() * 4, cudaMemcpyHostToDevice));
             for (Src& s : srcs) {
+                if (layer_range() && s.ckv[di] == nullptr && s.ik[di] == nullptr) continue;
                 if (s.h_ckv == nullptr) {   // (its events belong to the source layer's device: it records them)
                     if (!halloc(s.h_ckv, (size_t) kWin * ckv_rb(), err) || !halloc(s.h_ik, (size_t) kWin * ik_rb(), err))
                         return false;
@@ -3411,8 +3458,8 @@ struct Model::Impl {
             mk_split = true;
         }
 
-        // the embedding table, pinned on the host
-        {
+        // the embedding table belongs only to the range that starts the model.
+        if (owns_layer(0)) {
             const Tensor* t = pk.get("embed.weight");
             const size_t nv = (size_t) g.vocab * g.dim;
             const bool q8 = t != nullptr && t->dtype == "Q8_0" && t->bytes == nv / 32 * gg::kQ8Bytes;
@@ -3469,9 +3516,9 @@ struct Model::Impl {
         if (!halloc(h_x, (size_t) kWin * g.dim, err) || !halloc(h_w, (size_t) kWin * kPicks, err) ||
             !halloc(h_part, (size_t) kWin * g.dim, err) || !halloc(h_idx, (size_t) kWin * kPicks, err) || !halloc(h_idx_a, (size_t) 2 * kPicks, err) ||
             !halloc(h_emb, (size_t) std::max(kWin, chunk) * g.dim, err) ||
-            !halloc(h_eg, (size_t) std::max(1, pk.eg_layers) * eg_cap * cols * (pk.eg_hd + pk.eg_hd / 32) + 64, err))
+            !halloc(h_eg, owns_engram() ? (size_t) std::max(1, pk.eg_layers) * eg_cap * cols * (pk.eg_hd + pk.eg_hd / 32) + 64 : 64, err))
             return false;
-        if (pk.eg_layers > 0) {
+        if (pk.eg_layers > 0 && owns_engram()) {
             // the Engram rows' reader: threads enough to keep an SSD's queue busy (reads from the page cache need few);
             // the row cache a small share of the RAM free (DS4_ENGRAM_CACHE_MB: its size, 0 off; DS4_ENGRAM_THREADS)
             const size_t row = (size_t) pk.eg_hd + pk.eg_hd / 32;
@@ -3651,7 +3698,7 @@ struct Model::Impl {
                 fr = uma_free(d.id, fr);
                 room += std::max(0.0, (double) fr - (double) ((size_t) o.reserve_mib << 20)) * o.vram_experts;
             }
-            for (const Layer& l : L) all += (double) l.blob * l.n_exp;
+            for (const Layer& l : L) if (owns_layer(l.il)) all += (double) l.blob * l.n_exp;
             const double need = std::max(0.0, all - room);
             const uint64_t avail = ram_avail();
             warm_bytes = avail > kRamMargin ? std::min<uint64_t>(avail - kRamMargin, (uint64_t) need) : 0;
@@ -3884,6 +3931,21 @@ struct Model::Impl {
             store->set_pfds(pk.pfds);
             views = false;
             std::fprintf(stderr, "ds4: no view of the model's files after the load: unbuffered reads at the drive's rate\n");
+        }
+        if (layer_range()) {
+            for (const Layer& l : L)
+                if (!owns_layer(l.il) && (l.loaded_weight_bytes || l.win || l.gate_w || l.vram_tab || l.n_vram || l.vram_base || !l.host.empty())) {
+                    err = "unowned layer acquired a dense, attention or expert allocation";
+                    return false;
+                }
+#if defined(STRATA_NETWORK_EXPERTS)
+            for (const Layer& l : L)
+                std::fprintf(stderr,"ds4-range-layer: layer=%d owned=%d weight_bytes=%zu window_bytes=%zu expert_arena_bytes=%zu\n",
+                    l.il,owns_layer(l.il),l.loaded_weight_bytes,l.win ? static_cast<size_t>(g.win)*win_rb() : 0,
+                    static_cast<size_t>(l.n_slots)*unit(l));
+            std::fprintf(stderr,"ds4-range-load: layers=[%d,%d) effective_experts=6 embedding=%d head=%d weights_bytes=%zu caches_bytes=%zu expert_arena_bytes=%zu unowned_allocations=0\n",
+                o.layer_begin,o.layer_end,owns_layer(0),owns_layer(g.nl-1),devs[0].weights,devs[0].caches,devs[0].experts);
+#endif
         }
         if (o.verbose) std::fprintf(stderr, "ds4: loaded in %.1f s\n%s", (now_ms() - t0) / 1000.0, describe().c_str());
         if (chunk > 0) (void) pick_flow_min();   // (the startup line)
@@ -5155,7 +5217,8 @@ struct Model::Impl {
         for (Layer& l0 : L)
           for (int mi = 0; mi < l0.nm; ++mi) {
             Layer& l = member(l0, mi);
-            if (l.dev != di) continue;
+            if (l.dev != di || !owns_layer(l.il)) continue;
+            const size_t weights_before = *acct;
             // (a group's member: its share of the heads (wq_b columns, the sinks), of wo_a's groups and wo_b's rows,
             // of the shared expert's FFN; the rest whole)
             const int nm = l0.nm, na = g.heads / std::max(1, l.ahn), ha = l.ah0 / std::max(1, l.ahn);
@@ -5227,8 +5290,9 @@ struct Model::Impl {
                     return false;
             }
             if (!dalloc(d, l.vram_tab, (size_t) l.n_exp, err, acct)) return false;
+            l.loaded_weight_bytes = *acct-weights_before;
           }
-        if (d.grp == devs[(size_t) head_dev].grp) {   // the head: each member of its group a share of the columns
+        if (owns_layer(g.nl-1) && d.grp == devs[(size_t) head_dev].grp) {   // the head: each member of its group a share of the columns
             const int hn = head_nm();
             if (!mat(d, "head", d.head, err, acct, d.mi, hn, true) || !f32(d, "norm.weight", d.norm_w, err, acct, (size_t) g.dim))
                 return false;
@@ -5529,10 +5593,10 @@ struct Model::Impl {
                 }
             double want = 0;
             for (const Layer& l : L)
-                if (l.grp == (int) gi && !l.mtp && !l.cpu_only) want += (double) ucount(l) * l.n_exp;
+                if (owns_layer(l.il) && l.grp == (int) gi && !l.mtp && !l.cpu_only) want += (double) ucount(l) * l.n_exp;
             const double frac = want > 0 ? std::min(1.0, std::max(0.0, budget_t) / want) : 0.0;
             for (Layer& l : L) {
-                if (l.grp != (int) gi || l.mtp) continue;
+                if (!owns_layer(l.il) || l.grp != (int) gi || l.mtp) continue;
                 if (l.cpu_only) {   // (its type has no device kernel: the CPU lane reads every expert of it)
                     l.n_vram = 0;
                     continue;
@@ -5546,7 +5610,7 @@ struct Model::Impl {
                 if (l.grp == (int) gi) used += (double) ucount(l) * l.n_vram;
             // what the floors left: whole experts, layer by layer
             for (Layer& l : L) {
-                if (l.grp != (int) gi || l.cpu_only) continue;
+                if (!owns_layer(l.il) || l.grp != (int) gi || l.cpu_only) continue;
                 while (l.n_vram < l.n_exp && used + (double) ucount(l) <= budget) {
                     ++l.n_vram;
                     used += (double) ucount(l);
@@ -5622,6 +5686,7 @@ struct Model::Impl {
         }
         for (Layer& l : L) {
             // the hottest experts of the profile first, then by index
+            if (!owns_layer(l.il)) continue;
             std::vector<int> order((size_t) l.n_exp);
             std::iota(order.begin(), order.end(), 0);
             const uint32_t* p = prof.data() + (size_t) l.il * g.n_exp;
@@ -5761,6 +5826,7 @@ struct Model::Impl {
         std::vector<Job> jobs;
         size_t maxb = 0;
         for (const Layer& l : L) {
+            if (!owns_layer(l.il)) continue;
             maxb = std::max(maxb, l.blob);
             for (int e = 0; e < l.n_exp; ++e)
                 if (l.slot[(size_t) e] >= 0) jobs.push_back({l.il, e});
@@ -5822,6 +5888,7 @@ struct Model::Impl {
         };
         std::vector<Warm> warm;
         for (const Layer& l : L) {
+            if (!owns_layer(l.il)) continue;
             const uint32_t* p = prof.data() + (size_t) l.il * g.n_exp;
             double sum = 0;
             for (int e = 0; e < l.n_exp; ++e) sum += p[e];
@@ -6486,7 +6553,7 @@ struct Model::Impl {
             int a = -1, b = -1, ev = 0, et = 0;
             for (const Layer& l : L)
                 for (int m = 0; m < l.nm; ++m)
-                    if (member(l, m).dev == (int) di) {
+                    if (owns_layer(l.il) && member(l, m).dev == (int) di) {
                         if (a < 0) a = l.il;
                         b = l.il;
                         ev += l.n_vram;
@@ -6502,19 +6569,21 @@ struct Model::Impl {
             std::snprintf(line, sizeof line,
                           "ds4: CUDA%d layers [%d, %d]%s%s: weights %.2f GB, experts %.2f GB (%d of %d in VRAM), caches "
                           "%.2f GB, %.0f MiB free\n",
-                          d.id, a, b, tp, (int) di == head_dev ? " + head" : "", d.weights / 1e9, d.experts / 1e9, ev, et,
+                          d.id, a, b, tp, owns_layer(g.nl-1) && (int) di == head_dev ? " + head" : "", d.weights / 1e9, d.experts / 1e9, ev, et,
                           d.caches / 1e9, fr / 1048576.0);
             s << line;
         }
         int nh = 0;
         size_t hb_ = 0;
         for (const Layer& l : L) {
+            if (!owns_layer(l.il)) continue;
             nh += l.n_exp - l.n_vram;
             hb_ += (size_t) (l.n_exp - l.n_vram) * l.blob;
         }
         if (std::getenv("DS4_PLACE_HASH")) {   // debugging: which experts hold a VRAM slot, as one hash (is the placement the same from run to run?)
             uint64_t h = 1469598103934665603ull;
             for (const Layer& l : L)
+              if (owns_layer(l.il))
                 for (int e = 0; e < l.n_exp; ++e) { h ^= (uint64_t) (l.slot[(size_t) e] >= 0 ? 1 + l.il * 1000 + e : 0); h *= 1099511628211ull; }
             char hl[96];
             std::snprintf(hl, sizeof hl, "ds4: placement hash %016llx\n", (unsigned long long) h);
@@ -6958,6 +7027,7 @@ struct Model::Impl {
         constexpr int kPer = 4, kSets = 6, kRounds = 5, kCalls = 8;
         int il = -1, most = 0;
         for (int i = 0; i < g.nl; ++i) {
+            if (!owns_layer(i)) continue;
             int n = 0;
             for (int e = 0; e < L[(size_t) i].n_exp; ++e) n += L[(size_t) i].slot[(size_t) e] < 0;
             if (n > most) most = n, il = i;
@@ -7205,6 +7275,7 @@ struct Model::Impl {
         for (Check& c0 : ck) c0.pos = -1;
         mk.clear();
         for (Layer& l0 : L)
+          if (owns_layer(l0.il))
             for (int m = 0; m < l0.nm; ++m) {
                 Layer& l = member(l0, m);
                 Dev& d = devs[(size_t) l.dev];
@@ -7223,6 +7294,7 @@ struct Model::Impl {
     // state is indexed by position, and what lies past a restored position is written again)
     void checkpoint(int slot) { snap_into(ck[slot & 1]); }
     void snap_into(Check& c) {
+        if (layer_range()) throw std::logic_error("local checkpoints are unsupported for an assigned-layer session");
         c.pos = pos;
         c.win.resize(L.size());
         c.comp.resize(L.size() * 2);
@@ -7259,6 +7331,7 @@ struct Model::Impl {
     // the state at pos as a restore point a request asked for (shared: the end of a shared start, given up last); one
     // at this position already is kept (it holds the same state), else the one mark_victim() picks makes room
     void mark(bool shared) {
+        if (layer_range()) throw std::logic_error("restore points are unsupported for an assigned-layer session");
         if (Check* c = mark_room(pos, shared)) snap_into(*c);
     }
     // the restore point at position `at` to fill (nullptr: none kept, or one there already - in use again)
@@ -7299,6 +7372,7 @@ struct Model::Impl {
 
     // checkpoint 1 (the position before the last prompt's end) becomes the anchor too
     void pin() {
+        if (layer_range()) throw std::logic_error("checkpoint pinning is unsupported for an assigned-layer session");
         if (ck[1].pos > 0) ck[2] = ck[1];
     }
     // the checkpoints the state can go back to (what a slot of it keeps), latest first
@@ -7329,6 +7403,7 @@ struct Model::Impl {
     }
 
     bool restore(int64_t limit) {
+        if (layer_range()) return false;
         const int b = best_check(limit);
         if (b < 0) return false;
         const Check& c = check_at(b);
@@ -7387,6 +7462,7 @@ struct Model::Impl {
     // (the rows a position completed never change), the tokens up to it.  The mark stays; the slot holds the checkpoints
     // at or before it.  (A shared start kept from a read that went on past it: #607 without a stop at the start.)
     uint64_t slot_save(std::vector<uint8_t>& out, std::string& err, int64_t at = -1) {
+        if (layer_range()) { err = "slot save is unsupported for an assigned-layer session"; return 0; }
         const Check* at_mark = nullptr;
         if (at >= 0 && at != pos) {
             for (const Check& x : mk)
@@ -7508,6 +7584,7 @@ struct Model::Impl {
     }
 
     bool slot_load(const uint8_t* data, size_t bytes, int64_t n_pos, std::string& err) {
+        if (layer_range()) { err = "slot restore is unsupported for an assigned-layer session"; return false; }
         size_t off = 0;
         bool wrote = false, ok = false;
         // a load that stops after some of another conversation's state went into the layers leaves a state no
@@ -13486,6 +13563,10 @@ struct Model::Impl {
 
     bool forward(const int* tk, int T, int logits_rows, std::string& err, int seed_rows = -1) {
 #if defined(STRATA_NETWORK_EXPERTS)
+        if (layer_range() && (probe_cut < 0 || !owns_layer(0) || logits_rows != 0)) {
+            err = "assigned prefix requires a configured boundary observer and no local logits; suffix requires replay_boundary";
+            return false;
+        }
         if (probe_cut >= 0 && (probe_poisoned || !probe_observer)) {
             err = "boundary source unavailable; suffix executors require replay_boundary";
             return false;
@@ -13526,7 +13607,7 @@ struct Model::Impl {
         // left of their reads by then is the window's Engram time
         const double te = now_ms();
         const int64_t eg_w0 = eg_wait_ns.load();
-        for (int li = 0; li < pk.eg_layers; ++li) {
+        for (int li = 0; li < static_cast<int>(eg_win.size()); ++li) {
             EgBatch& b = *eg_win[(size_t) li];
             if (b.live) eg_finish(b);   // (a window that failed midway: its reads end before h_eg is reused)
             eg_issue(p0, T, li, nullptr, b);
@@ -13604,7 +13685,7 @@ struct Model::Impl {
         }
         std::vector<float> dump;
         if (dump_h != nullptr) dump.resize((size_t) T * g.nl * H * D);
-        for (int il = first_layer; il < g.nl; ++il) {
+        for (int il = first_layer; il < layer_limit(); ++il) {
 #if defined(STRATA_NETWORK_EXPERTS)
             if (first_layer > 0 && cancel && cancel()) { halted = true; err = "boundary replay cancelled"; return false; }
             if (first_layer == 0 && probe_cut == il && !emit_boundary(p0, T, err)) return false;
@@ -13644,6 +13725,12 @@ struct Model::Impl {
                                 (size_t) H * D * 4);
             }
         }
+#if defined(STRATA_NETWORK_EXPERTS)
+        if (layer_range() && !owns_layer(g.nl-1)) {
+            if (probe_cut != layer_limit() || !emit_boundary(p0,T,err)) return false;
+            return true;
+        }
+#endif
         if (dump_h != nullptr) std::fwrite(dump.data(), 4, dump.size(), dump_h);
         if (cur != head_dev) {
             err = "the head is not on the last layer's GPU";
@@ -14600,6 +14687,7 @@ struct Model::Impl {
     }
 
     int sample(float temperature, float top_p, int top_k, float min_p, uint64_t seed, uint64_t counter) {
+        if (!owns_layer(g.nl-1)) throw std::logic_error("assigned prefix has no output head");
         Dev& d = devs[(size_t) head_dev];
         cudaSetDevice(d.id);
         strata::dsv41k::SamplerParams sp;
@@ -14933,6 +15021,7 @@ struct Model::Impl {
     }
 
     bool logits(std::vector<float>& out) {
+        if (!owns_layer(g.nl-1)) return false;
         if (logits_all) {
             out = chunk_logits;
             return true;
@@ -14963,12 +15052,17 @@ struct Model::Impl {
     std::vector<std::string> info_lines() const {
         std::vector<std::string> v;
         int nh = 0;
-        for (const Layer& l : L) nh += l.n_exp - l.n_vram;
+        int owned_experts = 0;
+        for (const Layer& l : L) if (owns_layer(l.il)) {
+            nh += l.n_exp - l.n_vram;
+            owned_experts += l.n_exp;
+        }
         char b[512];
         // kv=fp4: DeepSeek's own cache layout (the compressed KV and the index keys FP4, the window FP8)
         std::snprintf(b, sizeof b, "INFO context=%lld kv=fp4 kv_resident=%lld expert_slots=%d engine_kind=ds4 "
                                    "cpu_experts=%d ram_experts=%d engine=ds4-0.1",
-                      (long long) o.max_context, (long long) o.max_context, g.nl * g.n_exp - nh, nh, ram_held);
+                      (long long) o.max_context, (long long) o.max_context,
+                      layer_range() ? owned_experts-nh : g.nl * g.n_exp-nh, nh, ram_held);
         v.push_back(b);
         if (commit_kept > 0) {   // (Windows, an integrated GPU: the commit kept experts off the GPU - the server says so)
             std::snprintf(b, sizeof b,
@@ -15025,6 +15119,7 @@ bool Model::feed(const int* tokens, int n, int logits_rows, std::string& err, in
 }
 bool Model::feed_mark(const int* tokens, int n, int logits_rows, int slot, std::string& err) {
     Impl& p = *p_;
+    if (p.layer_range()) { err = "checkpointed feed is unsupported for an assigned-layer session"; return false; }
     p.pm.last = -1;
     p.halted = false;
     p.fed_n = n;
@@ -15042,6 +15137,7 @@ bool Model::feed_mark(const int* tokens, int n, int logits_rows, int slot, std::
 }
 bool Model::feed_marks(const int* tokens, int n, int logits_rows, int slot,
                        const std::vector<std::pair<int64_t, bool>>& inner, std::string& err) {
+    if (p_->layer_range()) { err = "checkpointed feed is unsupported for an assigned-layer session"; return false; }
     if (inner.empty()) return feed_mark(tokens, n, logits_rows, slot, err);
     Impl& p = *p_;
     const int64_t p0 = p.pos;

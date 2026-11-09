@@ -2,6 +2,11 @@
 // plan_window(), head and attention-state paths. No alternative arithmetic/cache.
 bool configure_boundary_probe(int cut, const strata::core::DeepSeekBoundaryHeader& identity,
     std::function<bool(const strata::core::DeepSeekLayerBoundary&, std::string&)> observer, std::string& err) {
+    if (layer_range() && (observer ? !(o.layer_begin == 0 && o.layer_end == cut)
+                                  : !(o.layer_begin == cut && o.layer_end == g.nl))) {
+        err = "boundary role/cut disagrees with the loaded layer range";
+        return false;
+    }
     if ((cut != 20 && cut != 24) || pos != 0 || !toks.empty() || !ctoks.empty() || probe_cut >= 0 || identity.session <= probe_last_session ||
         devs.size() != 1 || par || !sync_decode || chunk != 0 || g.nl != 40 || g.dim != 5120 || g.hc != 4 ||
         g.n_mtp || o.seqs != 1 || o.vision || o.expert_cache || o.vram_experts != 0 || !pk.gguf || !file_experts || store || net_worker ||
@@ -138,6 +143,10 @@ bool replay_boundary(const strata::core::DeepSeekLayerBoundary& b, int logits_ro
 }
 
 bool boundary_state(std::vector<uint8_t>& out, std::string& err) {
+    if (layer_range() && !owns_layer(g.nl-1)) {
+        err = "the E2 suffix-state oracle is unavailable on an assigned prefix";
+        return false;
+    }
     if (probe_cut < 0 || probe_poisoned) { err = "no complete boundary state"; return false; }
     Dev &d = devs[0];
     CK(cudaSetDevice(d.id)); CK(cudaStreamSynchronize(d.st));
