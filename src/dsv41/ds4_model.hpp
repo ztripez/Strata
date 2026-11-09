@@ -77,10 +77,11 @@ struct Options {
 #if defined(STRATA_NETWORK_EXPERTS)
     /// Experimental assigned-only load. Default -1 keeps the complete model.
     /// Initial ranges are [0,20/24) or [20/24,40), synchronous text windows,
-    /// mapped CPU experts and no local expert cache/store. Execution requires
-    /// configure_boundary_probe(); ordinary checkpoints/session migration are unsupported.
+    /// mapped CPU experts and no local expert cache/store; expert RPC is opt-in.
+    /// Execution requires configure_boundary_probe(); ordinary checkpoints and
+    /// session migration are unsupported.
     int layer_begin = 0, layer_end = -1;
-    /// Opt-in single-primary text-window adapter; the GGUF must match the pack's expert views.
+    /// Opt-in text-window expert adapter; GGUF must match the pack's expert views.
     std::string expert_worker, expert_worker_placement, expert_worker_model;
     int expert_worker_timeout_ms = 5000;
 #endif

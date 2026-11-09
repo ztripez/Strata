@@ -1100,6 +1100,10 @@ struct Model::Impl {
             }
             return true;
         }
+        if (!gg::iq_q8k_activations()) {
+            err = "DeepSeek expert networking requires qualified DS4_IQ_Q8K=1 arithmetic; per32 remains unqualified";
+            return false;
+        }
         if (devs.size() != 1 || o.seqs != 1 || o.vision || o.dspark || o.dspark_auto ||
             o.experts != 6 || o.prefill_chunk != 0 || !pk.gguf || o.expert_worker_model.empty() ||
             o.expert_worker_placement.empty() || o.expert_worker_timeout_ms < 1 || o.expert_worker_timeout_ms > 600000) {
@@ -1112,10 +1116,11 @@ struct Model::Impl {
             if (ng.layers != g.nl || ng.experts != g.n_exp || ng.hidden != g.dim || ng.intermediate != g.ff ||
                 std::abs(ng.limit - g.lim) > 1e-6) { err = "pack/network GGUF geometry or clamp differs"; return false; }
             for (int li = 0; li < g.nl; ++li)
-                if (L[li].k_exp != 6) { err = "network layer effective routed-expert count is not six"; return false; }
+                if (owns_layer(li) && L[li].k_exp != 6) { err = "network layer effective routed-expert count is not six"; return false; }
             // Bind the content hash to the expert views the primary actually uses.
             const char *roles[3] = {"ffn_gate_exps.weight", "ffn_up_exps.weight", "ffn_down_exps.weight"};
             for (int li = 0; li < g.nl; ++li) {
+                if (!owns_layer(li)) continue;
                 const auto &l = L[li];
                 if (l.nm != 1 || l.lay.fmt != gg::kFmtMXFP4) { err = "network requires unsplit native GGUF experts"; return false; }
                 for (int r = 0; r < 3; ++r) {
@@ -1134,10 +1139,11 @@ struct Model::Impl {
             }
             std::vector<strata::core::ExpertWorkerPair> pairs;
             if (!strata::core::load_expert_placement_plan(o.expert_worker_placement, g.nl, g.n_exp, pairs, &err)) return false;
+            for (const auto &pair : pairs)
+                if (!owns_layer(static_cast<int>(pair.layer))) { err = "expert placement delegates an unowned layer"; return false; }
             net_worker = std::make_unique<strata::core::NetworkExpertExecutor>();
             const auto sha = strata::core::expert_worker_model_sha256(*net_model);
-            const auto arithmetic = gg::iq_q8k_activations() ? strata::core::ExpertWorkerArithmetic::DEEPSEEK_IQ_Q8K
-                                                           : strata::core::ExpertWorkerArithmetic::DEEPSEEK_IQ_PER32;
+            constexpr auto arithmetic = strata::core::ExpertWorkerArithmetic::DEEPSEEK_IQ_Q8K;
             std::fprintf(stderr, "ds4-network-identity: role=layer-owner effective_experts=6 engine=%s arithmetic=%u model_sha256=", STRATA_VERSION, static_cast<uint32_t>(arithmetic));
             for (const auto b : sha) std::fprintf(stderr, "%02x", b);
             std::fprintf(stderr, "\n");
@@ -2766,9 +2772,9 @@ struct Model::Impl {
             o.gpus.size() != 1 || o.tp != 1 || o.threads || !sync_decode ||
             o.seqs != 1 || o.prefill_chunk != 0 || o.vision || o.dspark || o.dspark_auto ||
             o.experts != 6 || o.vram_experts_auto || o.vram_experts != 0 || o.expert_cache ||
-            o.ssd_cache_gb != 0 || o.mmap_experts != 1 || !o.expert_worker.empty() ||
+            o.ssd_cache_gb != 0 || o.mmap_experts != 1 ||
             !lane_env_off() || disk_skip_w > 0 || ram_skip_w > 0)) {
-            err = "assigned-layer probe requires cut 20/24, one synchronous GPU, explicit six experts, mapped CPU experts, --prefill-chunk 0, DS4_STREAM=0, no cache/store/network/skip/vision/DSpark";
+            err = "assigned-layer probe requires cut 20/24, one synchronous GPU, explicit six experts, mapped CPU experts, --prefill-chunk 0, DS4_STREAM=0, no cache/store/skip/vision/DSpark";
             return false;
         }
 #endif

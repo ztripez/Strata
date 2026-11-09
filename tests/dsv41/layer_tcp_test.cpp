@@ -3,6 +3,7 @@
 #include "layer_probe.hpp"
 #include "ds4_gguf.cuh"
 #include "strata/core/deepseek_layer_rpc.hpp"
+#include <arpa/inet.h>
 #include <cerrno>
 #include <cmath>
 #include <poll.h>
@@ -18,6 +19,12 @@ using strata::ds4::Model;
 namespace {
 using Clock=std::chrono::steady_clock;
 namespace R=deepseek_layer_rpc_detail;
+bool numeric_endpoint(const std::string &endpoint) {
+    std::string host;uint16_t port=0;
+    if(!expert_worker_parse_host_port(endpoint,host,port)) return false;
+    in_addr ipv4{};in6_addr ipv6{};
+    return inet_pton(AF_INET,host.c_str(),&ipv4)==1 || inet_pton(AF_INET6,host.c_str(),&ipv6)==1;
+}
 std::string hex(const std::array<uint8_t,32> &bytes) {
     constexpr char digits[]="0123456789abcdef";std::string out;
     for(const auto b:bytes) {out+=digits[b>>4];out+=digits[b&15];}return out;
@@ -26,7 +33,8 @@ std::array<uint8_t,32> unhex(const std::string &text) {
     check(text.size()==64,"pinned executable SHA-256 must have 64 hexadecimal characters");
     std::array<uint8_t,32> out{};
     auto digit=[](char c) {return c>='0' && c<='9' ? c-'0':c>='a' && c<='f' ? c-'a'+10:-1;};
-    for(size_t i=0;i<out.size();++i) {const int a=digit(text[2*i]),b=digit(text[2*i+1]);check(a>=0 && b>=0,"invalid pinned executable SHA-256");out[i]=static_cast<uint8_t>(a*16+b);}return out;
+    for(size_t i=0;i<out.size();++i) {const int a=digit(text[2*i]),b=digit(text[2*i+1]);check(a>=0 && b>=0,"invalid pinned executable SHA-256");out[i]=static_cast<uint8_t>(a*16+b);}
+    check(std::any_of(out.begin(),out.end(),[](uint8_t b){return b!=0;}),"missing nonzero SHA-256 identity");return out;
 }
 uint64_t incarnation() {
     uint64_t out=0;size_t done=0;
@@ -62,7 +70,7 @@ int greedy(const std::vector<float> &logits,int vocab) {
     check(logits.size()==static_cast<size_t>(vocab) && std::all_of(logits.begin(),logits.end(),[](float v){return std::isfinite(v);}),"invalid greedy logit row");
     return static_cast<int>(std::max_element(logits.begin(),logits.end())-logits.begin());
 }
-DeepSeekLayerContract contract(Model &model,int cut) {
+DeepSeekLayerContract contract(Model &model,int cut,const std::array<uint8_t,32> &planned) {
     DeepSeekLayerContract c;std::string e;
     std::fprintf(stderr,"E3 TCP: hashing actual loaded pack mappings; identity domains DS4M1/DS4P1\n");
     check(model.boundary_artifacts(c.identity.model,c.identity.pack,e),e);
@@ -70,7 +78,7 @@ DeepSeekLayerContract contract(Model &model,int cut) {
     c.effective_experts=6;c.arithmetic=static_cast<uint32_t>(ExpertWorkerArithmetic::DEEPSEEK_IQ_Q8K);
     ExpertWireWriter plan;plan.put("strata-layer-only-plan/1");
     plan(c.identity.model,c.identity.pack,c.identity.next_layer,uint32_t{2048},c.effective_experts,c.arithmetic);
-    c.identity.plan=digest(std::string(plan.bytes.begin(),plan.bytes.end()));
+    c.identity.plan=std::any_of(planned.begin(),planned.end(),[](uint8_t b){return b!=0;}) ? planned : digest(std::string(plan.bytes.begin(),plan.bytes.end()));
     return c;
 }
 void receipt(const char *role,const DeepSeekLayerContract &c,const std::array<uint8_t,32> &binary) {
@@ -78,8 +86,8 @@ void receipt(const char *role,const DeepSeekLayerContract &c,const std::array<ui
         role,c.arithmetic,c.identity.next_layer,hex(c.identity.model).c_str(),hex(c.identity.pack).c_str(),hex(c.identity.plan).c_str(),hex(binary).c_str());
     std::fflush(stdout);
 }
-void run_suffix(Model &model,int cut,const std::string &endpoint,int timeout_ms,int accept_ms,int connections,const std::filesystem::path &out) {
-    auto c=contract(model,cut);auto first=c.identity;first.session=1;std::string error;
+void run_suffix(Model &model,int cut,const std::string &endpoint,int timeout_ms,int accept_ms,int connections,const std::array<uint8_t,32> &planned,const std::filesystem::path &out) {
+    auto c=contract(model,cut,planned);auto first=c.identity;first.session=1;std::string error;
     check(model.configure_boundary_probe(cut,first,{},error),error);c.layout=model.boundary_layout();model.reset();
     DeepSeekLayerCapabilities caps;caps.contract=c;caps.binary_sha256=digest(read("/proc/self/exe"));
     caps.incarnation=incarnation();caps.last_session=1;
@@ -180,6 +188,31 @@ int main(int argc,char **argv) {
         check(argc>=4 && std::strcmp(argv[1],"--experts")==0 && std::strcmp(argv[2],"6")==0,
               "native layer campaign requires explicit --experts 6 before the role");
         argc-=2;argv+=2;
+        auto o=options("");o.verbose=true;
+        std::array<uint8_t,32> planned{};bool plan_provided=false,expert_timeout_provided=false;
+        std::set<std::string> configured;
+        while(argc>=2 && std::string(argv[1]).starts_with("--")) {
+            check(argc>=3,"layer adapter option lacks a value");const std::string flag=argv[1],value=argv[2];
+            check(configured.insert(flag).second,"repeated layer adapter option");
+            if(flag=="--expert-worker") o.expert_worker=value;
+            else if(flag=="--expert-worker-model") o.expert_worker_model=value;
+            else if(flag=="--expert-worker-placement") o.expert_worker_placement=value;
+            else if(flag=="--expert-worker-timeout") {o.expert_worker_timeout_ms=number(value.c_str(),600000);expert_timeout_provided=true;}
+            else if(flag=="--plan-id") {planned=unhex(value);plan_provided=true;}
+            else check(false,"unknown layer adapter option");
+            argc-=2;argv+=2;
+        }
+        const bool experts=!o.expert_worker.empty();
+        check(experts==!o.expert_worker_model.empty() && experts==!o.expert_worker_placement.empty(),
+              "expert-worker endpoint, GGUF model and placement are required together");
+        check(!expert_timeout_provided || experts,"expert-worker timeout requires an expert worker");
+        if(experts) {
+            check(plan_provided,"hybrid layer campaign requires an explicit shared --plan-id");
+            check(o.expert_worker_timeout_ms>0,"expert-worker timeout must be positive");
+            check(numeric_endpoint(o.expert_worker),"invalid numeric expert-worker endpoint");
+            check(std::filesystem::is_regular_file(o.expert_worker_model) && std::filesystem::is_regular_file(o.expert_worker_placement),
+                  "expert-worker source GGUF or placement is absent");
+        }
         check(argc>=2,"missing suffix/prefix/reference role");const std::string role=argv[1];
         const bool suffix=role=="suffix",prefix=role=="prefix",reference=role=="reference";
         check((suffix && argc==9) || (prefix && argc>=11 && (argc-7)%4==0) || (reference && argc>=7 && (argc-3)%4==0),
@@ -191,7 +224,7 @@ int main(int argc,char **argv) {
         const int connections=suffix ? number(argv[7],16):0;
         check(timeout_ms>0 && (!suffix || (accept_ms>0 && connections>0)),"invalid layer deadline or connection count");
         if(prefix || suffix) {
-            std::string host;uint16_t port=0;check(expert_worker_parse_host_port(argv[4],host,port),"invalid numeric layer endpoint");
+            check(numeric_endpoint(argv[4]),"invalid numeric layer endpoint");
         }
         if(prefix) (void)unhex(argv[5]);
         struct Request {std::vector<int> prompt;int steps;bool ignore;std::filesystem::path out;};
@@ -208,9 +241,10 @@ int main(int argc,char **argv) {
                 requests.push_back({std::move(prompt),steps,ignore,out});
             }
         }
+        check(strata::ds4::gguf::iq_q8k_activations(),"layer campaign requires explicit DS4_IQ_Q8K=1");
         const std::filesystem::path suffix_out=suffix ? argv[8]:"";
         if(suffix) check(std::filesystem::create_directory(suffix_out),"suffix evidence output directory already exists");
-        auto o=options(argv[2]);o.verbose=true;
+        o.pack=argv[2];
         if(suffix) {o.layer_begin=cut;o.layer_end=40;}
         if(prefix) {o.layer_begin=0;o.layer_end=cut;}
         check(cudaSetDevice(0)==cudaSuccess,"native device selection failed");
@@ -221,10 +255,9 @@ int main(int argc,char **argv) {
               "unloaded native model published an artifact receipt");
         error.clear();
         memory("before");check(model.load(o,error),error);memory("loaded");
-        check(strata::ds4::gguf::iq_q8k_activations(),"layer campaign requires explicit DS4_IQ_Q8K=1");
         check(model.vocab()==129280,"native layer campaign requires the pinned DeepSeek vocabulary");
-        if(suffix) {run_suffix(model,cut,argv[4],timeout_ms,accept_ms,connections,suffix_out);return 0;}
-        auto c=contract(model,cut);const auto binary=digest(read("/proc/self/exe"));receipt(role.c_str(),c,binary);
+        if(suffix) {run_suffix(model,cut,argv[4],timeout_ms,accept_ms,connections,planned,suffix_out);return 0;}
+        auto c=contract(model,cut,planned);const auto binary=digest(read("/proc/self/exe"));receipt(role.c_str(),c,binary);
         if(prefix) {
             auto first=c.identity;first.session=1;
             check(model.configure_boundary_probe(cut,first,[](const auto &,std::string &){return true;},error),error);

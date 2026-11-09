@@ -2,7 +2,8 @@
 
 Experimental Linux TCP delivery contract, behind `STRATA_NETWORK_EXPERTS`.
 This implements delivery around the [native layer state contract](DEEPSEEK_LAYER_STATE.md).
-It does not yet connect the native executors or qualify E3 inference.
+The opt-in native harness connects the executors. Its first one-prompt
+mixed-backend TCP run passed; the complete E3 gate remains open.
 
 `deepseek_layer_rpc.hpp` supplies a serial suffix service and a persistent client.
 The service delegates preparation and computation to callbacks. Native `Model`
@@ -77,7 +78,7 @@ on Lucy. The shared network library built in both CUDA and HIP build trees.
 These are delivery-contract tests, not GPU arithmetic, native TCP inference,
 mixed-backend parity, quality, recovery, capacity or performance evidence.
 
-## Native layer-only harness (qualification pending)
+## Native layer harness (qualification pending)
 
 `deepseek_layer_tcp_test` is a separately built native harness, not a server/app
 integration. It is opt-in and excluded from the default build. It supports a
@@ -86,6 +87,9 @@ suffix service, an assigned prefix coordinator and a complete native reference:
 ```sh
 # Build by name in a configured CUDA or HIP build directory.
 cmake --build BUILD --target deepseek_layer_tcp_test
+
+# No weights or GPU execution: check invalid configurations on the built binary.
+uv run --no-project tools/test_ds4_layer_admission.py BUILD/deepseek_layer_tcp_test
 
 # New output directories are required; existing evidence is never overwritten.
 DS4_IQ_Q8K=1 BUILD/deepseek_layer_tcp_test --experts 6 suffix PACK 20 0.0.0.0:19170 600000 3600000 1 SUFFIX_OUT
@@ -152,8 +156,48 @@ The new identity domains are explicit and have no compatibility fallback:
 These differ from E1's raw four-shard digest and E2's raw pack-file digest.
 Excluding the `model_dir` locator permits verified local and NFS backing paths
 to share an execution identity without allowing different parsed tensor views.
-The harness's plan ID is a bounded layer-only test identity; installation of a
-complete resource/expert/orchestrator manifest remains E6 work.
+Without an explicit plan ID, the harness derives a bounded layer-only test
+identity. Installation of a complete resource/expert/orchestrator manifest
+remains E6 work.
 
-The harness builds on CUDA and HIP. Its native TCP runtime, greedy sampler
-comparison and independent loaded-identity agreement are not yet qualified.
+### Optional expert delegation
+
+The native harness accepts these global options after `--experts 6` and before
+the role:
+
+```text
+--expert-worker NUMERIC_IP:PORT
+--expert-worker-model FIRST_SOURCE_GGUF
+--expert-worker-placement PLACEMENT_FILE
+--expert-worker-timeout MILLISECONDS
+--plan-id NONZERO_SHA256
+```
+
+Endpoint, source GGUF and placement must be supplied together. Expert delegation
+also requires an explicit shared plan ID on both layer owners. The timeout must
+be positive. Duplicate options, missing files and zero identities fail before
+loading. Every harness role requires `DS4_IQ_Q8K=1`, including layer-only runs;
+the native model also refuses expert networking with unqualified per32 arithmetic.
+The no-worker native model path keeps its existing arithmetic policy.
+
+For this experimental harness, the trusted driver supplies the shared static
+plan ID. It must pin both expert placements and all process settings in its
+experiment manifest. The harness does not derive or transactionally install an
+orchestrator plan. Actual loaded model/pack and peer executable identities are
+still independently checked. Supplying a plan ID is not E6 qualification.
+
+The assigned native model uses its existing synchronous CPU-miss dispatch helper
+for eligible remote experts. Local expert GPU caching and the RAM store remain
+disabled in this bounded profile. Expert arithmetic, fallback during native
+execution and the combined hybrid path still require live qualification.
+
+### Measured native scope
+
+On 9 November 2026, the first native TCP pilot completed 128 generated steps and
+130 acknowledged windows with Astor HIP `[0,20)` and Lucy CUDA `[20,40)`. Actual
+loaded model/pack identities matched the independent source-manifest oracle.
+The natural response was “The capital of France is Paris.” followed by EOS;
+the functional loop explicitly continued after EOS to reach 128 steps.
+Both native processes and the driver exited successfully. This is one-prompt
+functional evidence, not broad numerical quality, performance or complete E3
+acceptance. The later same-backend multi-request/fault campaign remains separate.

@@ -1,0 +1,201 @@
+"""Check native layer CLI refusals before model loading or device selection.
+
+Run with ``uv run --no-project tools/test_ds4_layer_admission.py EXECUTABLE``.
+An already-built CUDA or HIP ``deepseek_layer_tcp_test`` is required.
+"""
+
+import hashlib
+import json
+import os
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+
+def main() -> None:
+    """Check the actual native executable and print exact refusal receipts."""
+    if len(sys.argv) != 2:
+        raise SystemExit("usage: test_ds4_layer_admission.py NATIVE_LAYER_EXECUTABLE")
+    executable = Path(sys.argv[1]).resolve(strict=True)
+    receipts = []
+    with tempfile.TemporaryDirectory(prefix="strata-hybrid-admission-") as temporary:
+        root = Path(temporary)
+        source, placement, output = (
+            root / "source.gguf",
+            root / "placement",
+            root / "out",
+        )
+        source.touch()
+        placement.touch()
+        worker = ["--expert-worker", "127.0.0.1:19171"]
+        model = ["--expert-worker-model", str(source)]
+        plan = ["--expert-worker-placement", str(placement)]
+        identity = ["--plan-id", "11" * 32]
+        role = [
+            "suffix",
+            "PACK",
+            "20",
+            "127.0.0.1:19170",
+            "600000",
+            "3600000",
+            "1",
+            str(output),
+        ]
+        qualified = worker + model + plan + identity
+        cases = [
+            ("partial-worker", worker + role, "required together", "1"),
+            ("partial-source", model + role, "required together", "1"),
+            ("partial-placement", plan + role, "required together", "1"),
+            (
+                "missing-plan-id",
+                worker + model + plan + role,
+                "explicit shared --plan-id",
+                "1",
+            ),
+            (
+                "zero-plan-id",
+                worker + model + plan + ["--plan-id", "00" * 32] + role,
+                "missing nonzero SHA-256",
+                "1",
+            ),
+            (
+                "invalid-plan-id",
+                ["--plan-id", "zz" * 32] + role,
+                "invalid pinned executable SHA-256",
+                "1",
+            ),
+            (
+                "short-plan-id",
+                ["--plan-id", "11"] + role,
+                "64 hexadecimal characters",
+                "1",
+            ),
+            (
+                "duplicate-option",
+                qualified + worker + role,
+                "repeated layer adapter option",
+                "1",
+            ),
+            (
+                "unknown-option",
+                ["--unknown", "value"] + role,
+                "unknown layer adapter option",
+                "1",
+            ),
+            ("missing-option-value", ["--plan-id"], "option lacks a value", "1"),
+            (
+                "orphan-timeout",
+                ["--expert-worker-timeout", "5"] + role,
+                "timeout requires an expert worker",
+                "1",
+            ),
+            (
+                "zero-timeout",
+                qualified + ["--expert-worker-timeout", "0"] + role,
+                "timeout must be positive",
+                "1",
+            ),
+            (
+                "invalid-endpoint",
+                ["--expert-worker", "hostname:19171"] + model + plan + identity + role,
+                "invalid numeric expert-worker endpoint",
+                "1",
+            ),
+            (
+                "absent-source",
+                worker
+                + ["--expert-worker-model", str(root / "absent")]
+                + plan
+                + identity
+                + role,
+                "source GGUF or placement is absent",
+                "1",
+            ),
+            (
+                "source-directory",
+                worker + ["--expert-worker-model", str(root)] + plan + identity + role,
+                "source GGUF or placement is absent",
+                "1",
+            ),
+            (
+                "absent-placement",
+                worker
+                + model
+                + ["--expert-worker-placement", str(root / "absent")]
+                + identity
+                + role,
+                "source GGUF or placement is absent",
+                "1",
+            ),
+            (
+                "hybrid-per32-refused",
+                qualified + role,
+                "requires explicit DS4_IQ_Q8K=1",
+                "0",
+            ),
+            ("layer-only-per32-refused", role, "requires explicit DS4_IQ_Q8K=1", "0"),
+            (
+                "ipv6-hybrid-per32-refused",
+                ["--expert-worker", "[::1]:19171"] + model + plan + identity + role,
+                "requires explicit DS4_IQ_Q8K=1",
+                "0",
+            ),
+            (
+                "invalid-layer-endpoint",
+                [
+                    "suffix",
+                    "PACK",
+                    "20",
+                    "hostname:19170",
+                    "600000",
+                    "3600000",
+                    "1",
+                    str(output),
+                ],
+                "invalid numeric layer endpoint",
+                "1",
+            ),
+        ]
+        for name, arguments, expected, arithmetic in cases:
+            environment = dict(os.environ, DS4_IQ_Q8K=arithmetic)
+            result = subprocess.run(
+                [str(executable), "--experts", "6", *arguments],
+                env=environment,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+            assert result.returncode == 1, (
+                name,
+                result.returncode,
+                result.stdout,
+                result.stderr,
+            )
+            assert expected in result.stderr, (name, result.stderr)
+            assert not result.stdout, (
+                name,
+                "unexpected native execution",
+                result.stdout,
+            )
+            assert not output.exists(), (name, "refused configuration created output")
+            receipts.append(
+                {"case": name, "exit": result.returncode, "stderr": result.stderr}
+            )
+    with executable.open("rb") as binary:
+        binary_sha256 = hashlib.file_digest(binary, "sha256").hexdigest()
+    print(
+        json.dumps(
+            {
+                "binary_sha256": binary_sha256,
+                "cases": receipts,
+                "scope": "CLI admission only; no model load or GPU execution",
+            },
+            indent=2,
+        )
+    )
+
+
+if __name__ == "__main__":
+    main()

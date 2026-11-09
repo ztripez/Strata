@@ -340,6 +340,12 @@ nonleading route slots, mixed local/remote picks, sparse token coverage, no-remo
 work and retention of fallback work after disconnect, NaN or truncated results.
 ASan/UBSan passed on Lucy. CUDA and HIP engine builds passed. This is dispatch-
 contract evidence, not live native MoE arithmetic/fallback or an E4 hybrid pass.
-Assigned-range admission still rejects expert-worker configuration; connecting
-and qualifying the two opt-in paths remains ahead. The currently running E3
+Assigned-range admission now permits the existing expert-worker configuration.
+The harness requires a shared explicit plan ID for that path and rejects
+unqualified per32 arithmetic before native loading. CUDA and HIP engine/harness
+builds and twenty CLI admission cases on each backend passed. Numeric-address
+validation now precedes loading; placements cannot delegate unowned layers.
+Receipts are in `/var/tmp/strata-deepseek-hybrid-admission-20261109/`.
+Live combined layer/expert execution has NOT RUN; admission and
+build receipts are separate from E4 acceptance. The currently running E3
 campaigns retain their older, separately frozen binaries.
