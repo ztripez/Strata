@@ -441,8 +441,10 @@ for the expert contract, then the six mapped files for the layer contract.
 Layer-only primaries and expert workers retain the 30-minute startup limit;
 each request retains 30 minutes, and the full fixture retains eight hours.
 This declaration does not change a running or completed E1/E3 trial's limits.
-The worker's opt-in one-hour first-byte idle allowance permits startup hashing
-and waiting for the other layer owner; active frame/RPC limits stay 30 seconds.
+The worker's opt-in two-hour first-byte idle allowance covers the declared
+worst-case sequential startup wait of 75 minutes. Active frame/RPC limits stay
+30 seconds. The earlier one-hour fixture was superseded before any native launch;
+its interruption exit and sealed inputs are retained.
 
 Any unexplained byte corruption stops runtime qualification. A quality failure
 stops performance claims. A failed speed gate does not erase a passing capacity

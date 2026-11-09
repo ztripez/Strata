@@ -45,7 +45,7 @@ preceding checkpoints; separate frozen executables identify each campaign.
 ## Prepared combined test and resource collector
 
 On 10 November, the new E4 static fixture was sealed in
-`/var/tmp/strata-deepseek-e4-static-20261110/` and queued behind the allocation
+`/var/tmp/strata-deepseek-e4-static-20261110-idle2h/` and queued behind the allocation
 probes and bidirectional tiered-worker matrix. It compares layer-only, empty
 expert ownership and real remote ownership with the same 384 MiB native GPU
 expert budget on each layer owner. The real placement delegates 128 identities
@@ -64,9 +64,14 @@ Source inspection found that the worker's frame receive timeout also covered
 idle startup hashing. `f4ece324` adds an opt-in first-byte idle allowance while
 retaining active frame deadlines and existing defaults. CUDA/HIP builds,
 protocol tests on both hosts, ASan/UBSan on Lucy and eight pre-load admission
-cases per host passed. The E4 fixture uses a one-hour idle allowance and a
+cases per host passed. The E4 fixture uses a two-hour idle allowance and a
 30-second active RPC limit. Native startup integration remains to be qualified;
 receipts are in `/var/tmp/strata-deepseek-worker-idle-20261110/`.
+The earlier one-hour fixture at `/var/tmp/strata-deepseek-e4-static-20261110/`
+was interrupted before any native launch: its idle allowance was shorter than
+the declared 75-minute sequential startup bound. Its exit 1, interruption reason
+and sealed inputs remain intact. This was pre-launch correction, not a model
+quality or numerical failure, and did not change an E1/E3 trial's deadlines.
 
 The [resource collector and draft audit](NETWORK_FABRIC_INVENTORY.md) use Control's
 existing probes. Four tests, live read-only snapshots on Lucy/Astor and refusal
