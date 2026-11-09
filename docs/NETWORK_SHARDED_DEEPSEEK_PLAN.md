@@ -267,6 +267,8 @@ into a second executor using the same backend first. Establish explicit ownershi
 of every persistent state object using the section 5 ownership table, and an
 oracle for every serialized field. Audit dense execution reuse as well as expert
 execution reuse.
+The [state inventory](DEEPSEEK_LAYER_STATE.md) records the initial source audit
+and candidate cuts; its static findings are not a replay pass.
 
 **Pass:** same-backend capture/restore is byte-identical for logits/tokens and
 state under deterministic settings, for prefill windows and >=128 decode steps.

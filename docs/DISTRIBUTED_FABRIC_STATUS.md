@@ -62,9 +62,46 @@ pack output, commands/settings, binary identities and raw HIP test results.
 
 G3 is partial: a stock HIP smoke exists, while the intended CUDA-primary stock
 baseline remains blocked and backend test limits remain explicit. G4 distributed
-DeepSeek inference has not been implemented or qualified. The current network
-worker remains Qwen-specific; DeepSeek needs its own adapter reusing the
-existing DeepSeek kernels and store, not a new cache or transport.
+DeepSeek inference is not qualified. A DeepSeek adapter using the existing
+kernels is present as an unvalidated working-tree draft; Qwen remains the last
+qualified worker family. No new cache or transport is required by that adapter.
+
+## E0/E1 implementation checkpoint
+
+The [execution plan](NETWORK_SHARDED_DEEPSEEK_PLAN.md) is being implemented.
+The [layer-state inventory](DEEPSEEK_LAYER_STATE.md) records source ownership,
+lifetimes, update ordering and the candidate cuts before layers 20 and 24.
+Neither candidate has passed executor replay or runtime memory-fit checks.
+
+The host-only `DeepSeekWorkerGeometry` guard passes twelve synthetic metadata
+cases. The new `DS4B` layer-capture codec passes roundtrip and malformed-record
+checks for one and sixteen rows on Lucy and Astor. Address/undefined-behavior
+sanitizer checks also pass. The three GPU-free CTest targets (geometry, capture
+codec and the existing expert protocol) pass. These results do not establish
+device-state capture, a second executor's replay or network layer inference.
+
+The rebuilt HIP worker passes the existing eleven-case Qwen expert comparison
+in default and tiered modes. The tiered probe reports five GPU, five RAM and
+fifteen mapped assignments. Lucy's post-test Qwen hash matches the pinned stock
+hash. Full-model Qwen regression/fault repetition and paired performance remain
+open; concurrent integrity hashing prevents performance conclusions here.
+
+The DeepSeek draft includes an effective six-expert identity receipt and a guard
+against any layer resolved to a different count before network READY. These are
+built but not yet live-qualified on a primary. Its expanded real
+fixture is prepared for four format-covering layers, six cases each, including
+sixteen rows and ninety-six assignments. Numerical acceptance is **NOT RUN**
+until its raw results are collected. The first launch was invalidated by a
+supervisor change that terminated the worker during hashing, before arithmetic.
+The retained retry separates each node's thirty-minute identity budget from the
+five-minute fixture budget; tolerances and inputs remain unchanged.
+
+Evidence and source snapshots:
+`/var/tmp/strata-deepseek-e1-20261109/`, with the active attempt in `retry1/`.
+The worker, real parity fixture and primary-network draft remain uncommitted
+pending numerical validation. E0's independent complete-artifact checks on
+Astor and the measured layer split remain incomplete. No E0/E1/E2 gate pass is
+claimed by this checkpoint.
 
 ## Other unfinished work
 

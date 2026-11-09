@@ -368,6 +368,13 @@ if(STRATA_BUILD_TESTS)
   add_executable(gguf_geometry_test tests/core/gguf_geometry_test.cpp)
   target_link_libraries(gguf_geometry_test PRIVATE strata_artifact)
   add_test(NAME gguf_geometry_test COMMAND gguf_geometry_test)
+  # The opt-in DeepSeek expert adapter's shape/clamp contract; no GPU or model.
+  add_executable(deepseek_worker_geometry_test tests/core/deepseek_worker_geometry_test.cpp)
+  target_link_libraries(deepseek_worker_geometry_test PRIVATE strata_artifact)
+  add_test(NAME deepseek_worker_geometry_test COMMAND deepseek_worker_geometry_test)
+  add_executable(deepseek_layer_boundary_test tests/core/deepseek_layer_boundary_test.cpp)
+  target_link_libraries(deepseek_layer_boundary_test PRIVATE strata_artifact)
+  add_test(NAME deepseek_layer_boundary_test COMMAND deepseek_layer_boundary_test)
 
   # the hipBLASLt tuning header's architecture gate: RDNA4 siblings share solution IDs, RDNA3 siblings share
   # theirs, cross-family pairs and version mismatches stay rejected (synthetic tables: no model, no GPU)
