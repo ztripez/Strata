@@ -206,15 +206,18 @@ Astor's full seven-file checksum pass completed successfully before the E2 pilot
 started. The pilot's exact source and executable are retained separately from
 the newer assigned-range implementation. The frozen HIP executable is copied to
 `deepseek_layer_replay_frozen-pilot` in the E2 evidence directory before rebuilding.
-The current-code full two-cut campaign is running from its separately frozen
-executable in `/var/tmp/strata-deepseek-e2-full-20261109/`. It requires 128 decode
-steps at each cut, exact comparisons and native future-selection rejection
-coverage. Its result is pending; the successful pilot does not substitute for it.
+The frozen full campaign in `/var/tmp/strata-deepseek-e2-full-20261109/` passed
+on 9 November at 20:24 CET. Both cuts (20 and 24) completed 128 decode steps
+through position 145, with exact finite logits, token histories and persistent
+state. Three future-selection rejection checks passed before native mutation,
+as did partial cancellation/reset and stale-session checks. Native and driver
+exits were both 0. This qualifies the same-backend two-cut E2 replay; assigned
+loading, TCP execution and mixed-backend quality remain separate gates.
 
 The new `deepseek_layer_partition_test` builds for CUDA and HIP. It compares a
 full reference against independently loaded prefix/suffix executors, including
 exact handoff fields, logits and both owners' persistent state. Its runtime is
-NOT RUN. It is an in-process oracle; separate-process TCP execution remains
+not yet qualified. It is an in-process oracle; separate-process TCP execution remains
 unqualified even if this probe passes.
 
 ## Other unfinished work
@@ -222,3 +225,20 @@ unqualified even if this probe passes.
 `tools/fabric/orchestrator.py` and `docs/KIMI_K3_FEASIBILITY.md` are untracked
 work inherited from an earlier continuation. Their presence does not establish
 G2 or G8 acceptance. Kimi implementation remains gated by DeepSeek qualification.
+
+## E3 layer-delivery protocol checkpoint
+
+The separate DS4L v1 client/service wraps DS4B captures, DS4R results and the
+existing delivery session. It pins the worker executable and complete layer
+contract before BEGIN, consumes fresh session IDs before native preparation,
+and publishes logits only after exact acknowledgement. A single deadline spans
+the complete EXECUTE/RESULT/ACK/ACKED transaction. Failed transactions close the
+channel without automatic retry or local layer fallback.
+
+Six CPU protocol/geometry tests passed on both Lucy and Astor. Real loopback TCP
+with synthetic callbacks covers duplicates/conflicts, stale sessions, preparation
+failure fencing, changed capability/READY receipts, malformed frames, disconnects,
+lost acknowledgements and deadlines. Lucy's RPC test passed ASan/UBSan; the
+network library built in the CUDA and HIP build trees. See
+[the delivery contract](DEEPSEEK_LAYER_RPC.md). Native TCP adapters and connected
+inference are NOT RUN; these tests do not advance the E3 inference gate.
