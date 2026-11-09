@@ -30,6 +30,11 @@ weights/router/quantization. Start with windows; chunked prefill is a later gate
 Existing defaults remain unchanged. No new local cache manager, quantization
 scheme, learned router, transport replacement or dynamic migration is included.
 
+The first target is distributed 2.00-bpw residency, qualified as capacity grade
+C1 below. Model-size scaling is a separate C2 qualification. A complete 2.25-bpw
+pack is a possible follow-up, subject to compatibility and measured fit; this
+follow-up sits outside the initial 2.00-bpw qualification.
+
 ## 2. Starting evidence and gaps
 
 - The seven pinned files are on
@@ -124,6 +129,14 @@ execution ownership maps those layers and experts to nodes.
   fabric planner before deciding its final location/schema.
 
 Document the missing capability before adding any storage or caching component.
+The network worker must call the existing DeepSeek expert and dense execution
+paths through a thin adapter. During E1/E2 review, map each adapter call to its
+authoritative local path. Reject duplicated quantization arithmetic, replacement
+policy, paging or layer-execution logic introduced solely for remote execution.
+Adapter code may validate, frame, copy and dispatch; it must not become another
+execution engine. Apply any required local execution fix to the authoritative
+path and qualify both local and network callers.
+
 In particular, DeepSeek's `--ssd-cache` budgets a **RAM expert store**; it is not
 proof of a local SSD file cache. A local GGUF mirror or shard copy needs verified
 content and an explicit source mapping. Do not silently add sparse-file caching.
@@ -142,6 +155,16 @@ VRAM/RAM/pinned-memory limits, backing files and fallback policy. Paths locate
 artifacts; equal paths do not establish equal bytes. Reject overridden pack views
 unless their exact source bytes and arithmetic have been qualified.
 
+Require explicit `--experts 6` on the solo reference and every layer-owning
+engine. At startup, every participant must emit its role, effective routed-expert
+count, model/plan identity and binary identity. An expert-only worker must verify
+the six-expert model contract even when a request contains only a subset of the
+six assignments. The coordinator must compare these receipts before READY and
+reject a missing receipt or count other than six. A CLI argument or manifest
+value alone does not prove the effective runtime setting; capture the resolved
+engine value after configuration/default handling. Keep these receipts with
+every quality and performance run.
+
 Budgets must include dense weights, attention/KV state, expert arenas, staging,
 service buffers, temporary peak allocations and a measured safety reserve.
 Report OS page cache and process RSS/PSS separately; do not double-count them.
@@ -157,6 +180,14 @@ Audit shared/compressed KV and indexer source dependencies across every proposed
 cut. Transfer or place the required cache updates explicitly. “KV stays with its
 layer” is not sufficient for DeepSeek's cross-layer dependencies. Initially
 reject cuts whose dependency transfer is not implemented.
+
+Before accepting a cut, enumerate every persistent session state object in a
+state-ownership table: semantic identity, shape/dtype, authoritative owner,
+lifetime (creation through reset/destruction), writers/readers, mutation order,
+and transfer/acknowledgement rules. Include shared/compressed KV, indexer state,
+cross-layer caches and sequencing/deduplication records. If a replicated view is
+needed, declare its source owner and visibility rule explicitly. No state may
+depend on implicit shared memory between the CUDA and HIP processes.
 
 Every request carries protocol/model/plan identity, session and sequence ID,
 request ID, token positions, prefill/decode mode, expected next layer, bounded
@@ -201,6 +232,8 @@ Inventory dense and KV dependencies per layer. Preserve the corruption history.
 
 **Pass:** a replayable two-node inventory and tensor-byte manifest; feasible
 per-node budgets for at least one candidate layer split. No new integrity error.
+Solo and participant startup receipts confirm the effective six-expert contract;
+configuration mismatch fails before plan activation.
 Unfinished physical DIMM/multi-pass memory checks remain explicit final-hardware
 qualification limits; the user's earlier decision permits bounded development.
 Lucy need not fit all dense layers. Astor's stock smoke is the starting solo
@@ -224,18 +257,25 @@ model/runtime default changes. Its paired repeated regression must stay within
 the specification's 5% performance tolerance on the matched workload. Reproduce
 and track the unrelated HIP bit-identity
 failure; do not claim universal backend compatibility.
+Review confirms that network expert computation calls authoritative DeepSeek
+execution paths, with no second arithmetic or local tier manager in the adapter.
 
 ### E2 — Layer-boundary contract and local replay
 
 **Work:** capture the existing local boundary state at a chosen cut; restore it
 into a second executor using the same backend first. Establish explicit ownership
-of KV/indexer state and an oracle for every serialized field.
+of every persistent state object using the section 5 ownership table, and an
+oracle for every serialized field. Audit dense execution reuse as well as expert
+execution reuse.
 
 **Pass:** same-backend capture/restore is byte-identical for logits/tokens and
 state under deterministic settings, for prefill windows and >=128 decode steps.
 At least two valid cuts pass dependency checks. Invalid shapes, sequence/epoch
 mixups, duplicate tokens and missing cache updates are rejected. Wire golden-byte,
 fragmentation, size-limit and cancellation tests pass before a network layer run.
+Every persistent state object has an owner, lifetime and mutation order; tests
+cover reset, cancellation, duplicate delivery and stale-session access to those
+objects. Any unresolved state dependency blocks E3, regardless of transfer speed.
 
 ### E3 — Real network layer-only inference
 
@@ -317,12 +357,31 @@ weights or permanent copies of every remote-owned expert. Count file cache,
 replicas and staging separately. Hashing can touch the entire artifact; that is
 not permanent model residency.
 
-**Capacity-usable pass:** demonstrate increased admissible model headroom or a
-resource/I/O reduction relative to solo under matched limits, while sustaining
-the specification's target >=5 warm decode tokens/s at the stated workload.
-If that target fails, retain functional capacity evidence without claiming usable
-capacity acceptance. Measure whether cold-read bytes/bandwidth make it impossible
-before optimizing scheduling.
+**C1 — Distributed residency:** the complete 2.00-bpw model passes the functional
+and E5 quality gates with materially lower per-node resource requirements than
+the admissible solo reference. Before measurement, freeze the constraining
+resource (peak VRAM or host memory), the numerical reduction target and all
+per-node limits. Report every node's peaks and aggregate costs so moving pressure
+to the peer or page cache is visible. Reduced backing I/O alone is an efficiency
+result, not proof of reduced residency or larger-model capability.
+
+**C1 usable pass:** C1 plus the specification's target >=5 warm decode tokens/s
+at the stated 2K-context workload. If throughput fails, retain functional C1
+evidence without claiming usable capacity acceptance. Measure whether cold-read
+bytes/bandwidth prevent the target before optimizing scheduling.
+
+**C2 — Model-size scaling (separate follow-up):** a complete larger or
+higher-fidelity model passes its pinned quality and functional gates across the
+cluster within fixed per-node limits, while no individual node can run that same
+configuration acceptably under those limits. A compatible 2.25-bpw DeepSeek pack
+is a candidate after 2.00-bpw qualification, not a promised outcome. Freeze its
+artifact identity, context, expert count, budgets, quality reference, startup
+deadline and acceptable throughput before any comparison. Test solo execution
+on both Lucy and Astor with supported local offloading enabled; a GPU-only load
+failure does not establish solo infeasibility. Preserve whether each solo case
+fails fit, quality, deadline or throughput. A cluster pass requires the same
+quality contract and >=5 warm decode tokens/s at the stated 2K workload. Report
+C1 and C2 independently; a C1 pass never implies C2.
 
 **Speed pass:** >=30 requests per case, >=5 held-out prompts, >=3 interleaved
 rounds; warm median decode >=10% faster than the best admissible same-quality solo
@@ -342,12 +401,15 @@ Do not disrupt the household NFS service to inject faults.
 
 ### E8 — Reproducible two-node release checkpoint (G7)
 
-**Pass:** E0–E7 have explicit receipts; numerical, capacity-usable and speed gates
+**Pass:** E0–E7 have explicit receipts; numerical, C1-usable and speed gates
 pass independently; one command can discover/plan/install/run the qualified
 configuration; opt-in flags, stop/restart, rollback and failure behavior are
 documented. Evidence is mirrored with a verified checksum manifest. Original
 Qwen and solo engine paths still pass their controls. No arbitrary N-node or Kimi
 execution claim follows from this two-node result.
+Report C2 as `NOT RUN`, `PASS`, `FAIL` or `BLOCKED` separately. It is not required
+for the initial 2.00-bpw checkpoint; a model-size-scaling claim requires its own
+complete C2 receipts.
 
 Complete the agreed outstanding hardware checks before claiming the original
 G0/G7 release gates. While those are pending, label the result an experimental
