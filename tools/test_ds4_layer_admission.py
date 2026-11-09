@@ -56,6 +56,7 @@ def main() -> None:
         qualified = worker + model + plan + identity
         gpu_budget = ["--expert-vram-mib", "384"]
         teacher = ["--decode-mode", "teacher-forced"]
+        per_request = ["--decode-mode", "per-request"]
         reference = ["reference", "PACK", str(prompt), str(targets), "1", str(output)]
         cases = [
             ("partial-worker", worker + role, "required together", "1"),
@@ -188,7 +189,7 @@ def main() -> None:
             (
                 "unknown-decode-mode",
                 ["--decode-mode", "sampling"] + role,
-                "decode mode must be greedy or teacher-forced",
+                "decode mode must be greedy, teacher-forced or per-request",
                 "1",
             ),
             (
@@ -292,6 +293,80 @@ def main() -> None:
                 "1",
             ),
         ]
+        forced_group = [str(prompt), "teacher-forced:" + str(targets), "1", str(output)]
+        greedy_group = [str(prompt), "greedy:3", "0", str(root / "other-out")]
+        cases.extend(
+            [
+                (
+                    "per-request-suffix",
+                    per_request + role,
+                    "decode mode belongs to prefix/reference",
+                    "1",
+                ),
+                (
+                    "per-request-no-tag",
+                    per_request + reference,
+                    "per-request DECODE requires",
+                    "1",
+                ),
+                (
+                    "per-request-forced-EOS",
+                    per_request
+                    + ["reference", "PACK", *forced_group[:-2], "0", str(output)],
+                    "teacher forcing requires",
+                    "1",
+                ),
+                (
+                    "per-request-empty-target",
+                    per_request
+                    + [
+                        "reference",
+                        "PACK",
+                        str(prompt),
+                        "teacher-forced:" + str(empty),
+                        "1",
+                        str(output),
+                    ],
+                    "token file must contain",
+                    "1",
+                ),
+                (
+                    "per-request-zero-greedy",
+                    per_request
+                    + ["reference", "PACK", str(prompt), "greedy:0", "0", str(output)],
+                    "decode count must be positive",
+                    "1",
+                ),
+                (
+                    "per-request-invalid-tag",
+                    per_request
+                    + [
+                        "reference",
+                        "PACK",
+                        str(prompt),
+                        "sampling:3",
+                        "0",
+                        str(output),
+                    ],
+                    "per-request DECODE requires",
+                    "1",
+                ),
+                # Reach the arithmetic guard only after both valid groups were parsed.
+                # This proves mode selection without loading a model or selecting a GPU.
+                (
+                    "per-request-forced-then-greedy",
+                    per_request + ["reference", "PACK", *forced_group, *greedy_group],
+                    "requires explicit DS4_IQ_Q8K=1",
+                    "0",
+                ),
+                (
+                    "per-request-greedy-then-forced",
+                    per_request + ["reference", "PACK", *greedy_group, *forced_group],
+                    "requires explicit DS4_IQ_Q8K=1",
+                    "0",
+                ),
+            ]
+        )
         for name, arguments, expected, arithmetic in cases:
             environment = dict(os.environ, DS4_IQ_Q8K=arithmetic)
             result = subprocess.run(

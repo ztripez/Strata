@@ -209,7 +209,7 @@ int main(int argc,char **argv) {
         argc-=2;argv+=2;
         auto o=options("");o.verbose=true;
         std::array<uint8_t,32> planned{};bool plan_provided=false,expert_timeout_provided=false;
-        bool teacher_forced=false,decode_mode_provided=false;
+        bool teacher_forced=false,per_request_mode=false,decode_mode_provided=false;
         std::set<std::string> configured;
         while(argc>=2 && std::string(argv[1]).starts_with("--")) {
             check(argc>=3,"layer adapter option lacks a value");const std::string flag=argv[1],value=argv[2];
@@ -220,8 +220,8 @@ int main(int argc,char **argv) {
             else if(flag=="--expert-worker-timeout") {o.expert_worker_timeout_ms=number(value.c_str(),600000);expert_timeout_provided=true;}
             else if(flag=="--plan-id") {planned=unhex(value);plan_provided=true;}
             else if(flag=="--decode-mode") {
-                check(value=="greedy" || value=="teacher-forced","decode mode must be greedy or teacher-forced");
-                teacher_forced=value=="teacher-forced";decode_mode_provided=true;
+                check(value=="greedy" || value=="teacher-forced" || value=="per-request","decode mode must be greedy, teacher-forced or per-request");
+                teacher_forced=value=="teacher-forced";per_request_mode=value=="per-request";decode_mode_provided=true;
             }
             else if(flag=="--expert-vram-mib") {o.expert_vram_mib=number(value.c_str(),65536);o.vram_experts=1;}
             else check(false,"unknown layer adapter option");
@@ -259,11 +259,18 @@ int main(int argc,char **argv) {
         if(!suffix) {
             const int first=prefix ? 7:3;check((argc-first)/4<=16,"too many requests in one bounded campaign");
             for(int at=first;at<argc;at+=4) {
+                std::string decode=argv[at+1];bool force=teacher_forced;
+                if(per_request_mode) {
+                    const std::string teacher_tag="teacher-forced:",greedy_tag="greedy:";
+                    force=decode.starts_with(teacher_tag);
+                    check(force || decode.starts_with(greedy_tag),"per-request DECODE requires greedy:COUNT or teacher-forced:TARGET_IDS");
+                    decode.erase(0,force ? teacher_tag.size():greedy_tag.size());
+                }
                 std::vector<int> targets;
-                if(teacher_forced) targets=tokens(argv[at+1],129280);
-                const int steps=teacher_forced ? static_cast<int>(targets.size()):number(argv[at+1],1024);
+                if(force) targets=tokens(decode.c_str(),129280);
+                const int steps=force ? static_cast<int>(targets.size()):number(decode.c_str(),1024);
                 const bool ignore=number(argv[at+2],1)!=0;
-                check(!teacher_forced || (steps<=1024 && ignore),"teacher forcing requires 1..1024 targets and IGNORE_EOS=1");
+                check(!force || (steps<=1024 && ignore),"teacher forcing requires 1..1024 targets and IGNORE_EOS=1");
                 check(steps>0,"decode count must be positive");
                 auto prompt=tokens(argv[at],129280);
                 check(prompt.size()+static_cast<size_t>(steps)<=2048,"generation exceeds declared context");

@@ -230,6 +230,14 @@ prompt plus targets must fit the declared 2048-token context. `IGNORE_EOS` must
 be `1`, so a target EOS is consumed in the same position on both runs.
 The suffix is unchanged and does not take a decode-mode option.
 
+To reuse one loaded prefix/reference across both capture modes, opt into
+`--decode-mode per-request`. Every request's `DECODE` field must then be explicit:
+`teacher-forced:TARGET_IDS` or `greedy:COUNT`. Teacher-forced requests still require
+`IGNORE_EOS=1`; greedy task checks can stop at natural EOS. The same model is
+reset between requests. Existing global greedy/teacher-forced modes retain their
+argument format. This option changes only the opt-in qualification harness;
+mixed-mode native capture still requires live validation.
+
 Before consuming each target, `targets.jsonl` records its index, current position,
 raw-logit window number, target ID and this executor's predicted ID. The model
 then consumes the target rather than its prediction. The last target produces
