@@ -340,6 +340,9 @@ rankings use an explicitly labeled cost model. Validate on held-out traces, not
 the trace used to rank the plan. The draft planner's constants are not calibrated
 measurements. No per-token central scheduling is allowed.
 
+The [resource collector and draft audit](NETWORK_FABRIC_INVENTORY.md) record the
+read-only inventory boundary. Its uncalibrated observations do not admit plans.
+
 **Pass:** an identical inventory/model/workload snapshot reproduces the same plan
 ID; infeasible or capability-incompatible plans are rejected before READY. The
 orchestrator reproduces the E4 static hybrid plan or a better admissible plan,
