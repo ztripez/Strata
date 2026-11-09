@@ -11,6 +11,7 @@
 #include <cstring>
 #include <fstream>
 #include <limits>
+#include <memory>
 #include <netinet/tcp.h>
 #include <set>
 #include <stdexcept>
@@ -373,6 +374,62 @@ void framing_tests() {
     unlink(path.c_str());
 }
 } // namespace
+// Run the actual native adapter method against this test's independent TCP
+// arithmetic oracle. This minimal context supplies no GPU or alternate kernels.
+struct CpuMissAdapterHarness {
+    struct Layer {int il=0;bool mtp=false;};
+    struct Geometry {int dim=static_cast<int>(N);} g;
+    static constexpr int kPicks=8;
+    std::unique_ptr<NetworkExpertExecutor> net_worker=std::make_unique<NetworkExpertExecutor>();
+    bool net_warned=false;
+#include "../../src/dsv41/ds4_network_adapter.inc"
+};
+void cpu_miss_adapter_tests() {
+    constexpr int T=3;
+    const std::vector<std::pair<int,int>> picks{{7,5},{2,0},{3,17},{1,20}};
+    const std::vector<std::pair<int,int>> locals{{2,0},{1,20}};
+    std::vector<float> weights(T*8,9.0f);weights[5]=.25f;weights[17]=.75f;
+    // Both native consumers: contiguous synchronous rows and padded async rows.
+    for(size_t stride:{static_cast<size_t>(N),static_cast<size_t>(N)+23}) {
+        Server server;CpuMissAdapterHarness adapter;std::string error;
+        check(adapter.net_worker->connect_and_handshake(server.endpoint(),L,L,E,N,FF,K,identity,1000,error,
+              ExpertWorkerArithmetic::DEEPSEEK_IQ_Q8K),error.c_str());
+        check(adapter.net_worker->install_plan(plan,error),error.c_str());
+        std::vector<float> rows(T*stride,777.0f);
+        for(int t=0;t<T;++t) for(uint32_t c=0;c<N;++c) rows[t*stride+c]=t+c*.001f;
+        std::vector<float> sums{42};std::vector<uint8_t> mask{1};auto only_local=locals;
+        check(!adapter.offload_cpu_picks({},T,rows.data(),stride,weights.data(),only_local,sums,mask) &&
+              only_local==locals && sums.empty() && mask.empty() && adapter.net_worker->stats().layers_dispatched==0,
+              "CPU-only picks emitted a remote request or changed local work");
+        auto delegated=picks;
+        check(adapter.offload_cpu_picks({},T,rows.data(),stride,weights.data(),delegated,sums,mask),"native adapter did not delegate held CPU misses");
+        check(delegated==locals && mask==std::vector<uint8_t>({1,0,1}) && sums.size()==T*N,
+              "native adapter removed wrong local picks or changed remote coverage");
+        for(uint32_t c=0;c<N;++c) {
+            check(std::fabs(sums[c]-.25f*oracle(rows[c],0,7,c))<1e-6f,"remote first-row slot weight/activation changed");
+            check(sums[N+c]==0,"unassigned remote row acquired a contribution");
+            check(std::fabs(sums[2*N+c]-.75f*oracle(rows[2*stride+c],0,3,c))<1e-6f,"remote padded-row stride/slot weight changed");
+        }
+        check(adapter.net_worker->stats().assignments_executed==2 && adapter.net_worker->stats().fallbacks==0,
+              "native adapter executed missing/double remote assignments");
+        delegated=picks;
+        check(!adapter.offload_cpu_picks({0,true},T,rows.data(),stride,weights.data(),delegated,sums,mask) && delegated==picks && sums.empty() && mask.empty(),
+              "native adapter delegated an unsupported drafter layer");
+    }
+    for(Fault fault:{Fault::disconnect,Fault::nan,Fault::short_payload}) {
+        Server server(fault);CpuMissAdapterHarness adapter;std::string error;
+        check(adapter.net_worker->connect_and_handshake(server.endpoint(),L,L,E,N,FF,K,identity,1000,error,
+              ExpertWorkerArithmetic::DEEPSEEK_IQ_Q8K),error.c_str());
+        check(adapter.net_worker->install_plan(plan,error),error.c_str());
+        const std::vector<float> rows(T*N,.25f);auto retained=picks;std::vector<float> sums{42};std::vector<uint8_t> mask{1};
+        check(!adapter.offload_cpu_picks({},T,rows.data(),N,weights.data(),retained,sums,mask) && retained==picks && sums.empty() && mask.empty(),
+              "failed expert delivery lost local fallback picks or exposed partial sums");
+        check(adapter.net_warned && !adapter.net_worker->healthy() && adapter.net_worker->stats().fallbacks==1,
+              "failed expert delivery remained healthy or hid its fallback");
+        check(!adapter.offload_cpu_picks({},T,rows.data(),N,weights.data(),retained,sums,mask) && retained==picks && adapter.net_worker->stats().fallbacks==1,
+              "disabled expert channel was automatically retried");
+    }
+}
 void identity_span_tests() {
     const uint8_t abc[]={0x61,0x62,0x63};
     const std::array<uint8_t,32> expected{0xba,0x78,0x16,0xbf,0x8f,0x01,0xcf,0xea,0x41,0x41,0x40,0xde,0x5d,0xae,0x22,0x23,
@@ -424,6 +481,7 @@ int main(int argc, char **argv) {
             net.print_summary(stdout);
         } else {
             identity_span_tests();
+            cpu_miss_adapter_tests();
             framing_tests();
             executor_tests();
         }

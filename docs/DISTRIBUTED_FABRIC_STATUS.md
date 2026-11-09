@@ -4,6 +4,30 @@ Updated 9 November 2026. Source branch `feat/distributed-experts`. The stock
 smoke below used `3c4f7ff8`; later campaigns retain their own source snapshots
 and binary hashes. Strata's existing node-local staging remains authoritative.
 
+Latest measured layer checkpoint, 9 November at 21:33 CET: E2 passed both cuts
+with 128 decode steps; the assigned-only HIP cut20 oracle also passed 128 steps.
+The first real mixed-backend layer-only run passed: Astor owned `[0,20)`, Lucy
+owned `[20,40)`, and all 130 windows were acknowledged over persistent TCP.
+It generated 128 tokens with finite saved logits and zero unassigned dense
+allocations. The first response was “The capital of France is Paris.” followed
+by EOS; the functional loop explicitly continued after EOS to reach 128 steps.
+Both native processes and the acceptance driver exited 0.
+
+The run used native mapped CPU experts, six routed experts and the qualified
+stock Q8_K activation policy. All six mapped backing files, parsed pack identity
+and pinned executables matched the independent oracle. IPv4 routing and negotiated
+link checks used the 10Gb interfaces in both directions. This is one-prompt
+functional evidence, not E3 completion, hybrid expert execution, broad quality,
+capacity or performance acceptance. Raw receipts are in
+`/var/tmp/strata-deepseek-e3-tcp-20261109/`; its `summary.json`, `first-response.json`
+and source/binary snapshots are the acceptance record.
+
+A following frozen HIP reference/TCP batch is active in
+`/var/tmp/strata-deepseek-e3-batch-control-20261109/`. It requires two distinct
+128-token prompts, normal EOS, native duplicate/incarnation tests, exact
+same-backend logits/tokens, fresh sessions and an explicit worker-loss probe.
+Its result is pending. Earlier sections below retain the preceding checkpoints.
+
 ## Qwen: bounded tiered-worker milestone completed
 
 The opt-in worker can acknowledge more experts than fit in GPU memory and use
@@ -299,3 +323,23 @@ Two distinct long functional prompts and an EOS smoke were rendered with Strata'
 pinned DeepSeek tokenizer and frozen before cross-host output was observed, in
 `/var/tmp/strata-deepseek-e3-functional-fixtures-20261109/`. Their token IDs roundtrip
 exactly. They are E3 fixtures and are excluded from the held-out E5 quality set.
+
+## Synchronous native expert dispatch preparation
+
+Expert RPC previously covered only the asynchronous native CPU-miss lane.
+The synchronous host-routed window path now uses the same small dispatch helper.
+It delegates eligible CPU misses, preserves resident GPU picks and sends their
+unchanged router weights. Successful remote sums are combined once with native
+local results. A runtime delivery failure retains all original CPU picks for
+local recomputation, reports the failure and disables that channel. Configuration
+failures continue to reject startup.
+
+The actual helper passed real TCP tests against the existing independent mock
+arithmetic oracle on Lucy and Astor. These cover contiguous/padded row strides,
+nonleading route slots, mixed local/remote picks, sparse token coverage, no-remote
+work and retention of fallback work after disconnect, NaN or truncated results.
+ASan/UBSan passed on Lucy. CUDA and HIP engine builds passed. This is dispatch-
+contract evidence, not live native MoE arithmetic/fallback or an E4 hybrid pass.
+Assigned-range admission still rejects expert-worker configuration; connecting
+and qualifying the two opt-in paths remains ahead. The currently running E3
+campaigns retain their older, separately frozen binaries.

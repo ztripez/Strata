@@ -1148,6 +1148,7 @@ struct Model::Impl {
         } catch (const std::exception &e) { err = e.what(); return false; }
         return true;
     }
+#include "ds4_network_adapter.inc"
 #endif
     Pack pk;
     Geo g;
@@ -9700,31 +9701,7 @@ struct Model::Impl {
 #if defined(STRATA_NETWORK_EXPERTS)
                 std::vector<float> network_sums;
                 std::vector<uint8_t> network_mask;
-                if (net_worker && !net_warned && net_worker->healthy() && !l.mtp && net_worker->holds_layer(li)) {
-                    std::vector<strata::core::ExpertWorkerAssignment> remote;
-                    std::vector<std::pair<int, int>> local;
-                    for (const auto pick : picks) {
-                        const int t = pick.second / kPicks, slot = pick.second % kPicks;
-                        if (net_worker->holds(li, pick.first))
-                            remote.push_back({static_cast<uint16_t>(t), static_cast<uint16_t>(slot), pick.first, r.w[t][slot]});
-                        else local.push_back(pick);
-                    }
-                    if (!remote.empty()) {
-                        std::vector<float> activation(static_cast<size_t>(T) * g.dim);
-                        for (int t = 0; t < T; ++t)
-                            std::copy(r.x[t], r.x[t] + g.dim, activation.data() + static_cast<size_t>(t) * g.dim);
-                        network_sums.resize(static_cast<size_t>(T) * g.dim);
-                        network_mask.resize(T);
-                        std::string error;
-                        if (net_worker->execute_sync(li, T, activation.data(), remote, network_sums.data(), network_mask.data(), &error))
-                            picks.swap(local);
-                        else {
-                            net_warned = true;
-                            network_mask.clear();
-                            std::fprintf(stderr, "ds4-network: layer %d failed (%s); recomputing on local CPU and disabling remote execution\n", li, error.c_str());
-                        }
-                    }
-                }
+                (void) offload_cpu_picks(l,T,&r.x[0][0],static_cast<size_t>(kMaxDim),&r.w[0][0],picks,network_sums,network_mask);
 #endif
                 std::sort(picks.begin(), picks.end());
                 for (size_t a = 0; a < picks.size();) {
@@ -14567,6 +14544,24 @@ struct Model::Impl {
                 per[(size_t) e].push_back({t, i});
             }
         }
+#if defined(STRATA_NETWORK_EXPERTS)
+        std::vector<float> network_sums;
+        std::vector<uint8_t> network_mask;
+        if (net_worker && !net_warned && net_worker->healthy() && !l.mtp && net_worker->holds_layer(l.il)) {
+            std::vector<std::pair<int,int>> picks;
+            for (int t=0;t<T;++t)
+                for (int slot=0;slot<l.k_exp;++slot) {
+                    const int expert=h_idx[t*kPicks+slot];
+                    if (l.slot[static_cast<size_t>(expert)]<0) picks.push_back({expert,t*kPicks+slot});
+                }
+            if (offload_cpu_picks(l,T,h_x,static_cast<size_t>(D),h_w,picks,network_sums,network_mask)) {
+                for (int expert=0;expert<l.n_exp;++expert)
+                    if (l.slot[static_cast<size_t>(expert)]<0) per[static_cast<size_t>(expert)].clear();
+                for (const auto pick:picks)
+                    per[static_cast<size_t>(pick.first)].push_back({pick.second/kPicks,pick.second%kPicks});
+            }
+        }
+#endif
         int nslots = 0;
         for (int e = 0; e < l.n_exp; ++e) {
             const auto& pe = per[(size_t) e];
@@ -14659,10 +14654,25 @@ struct Model::Impl {
               if (ds4_dbg("DS4_CPU_LOG") && !reg) { reg = true; std::atexit([] { std::fprintf(stderr, "cpu lane calls: %ld, experts %ld, %.1f ms (%.3f ms a call, %.3f ms an expert)%c", calls, exps, ms, ms / (double) calls, ms / (double) exps, 10); }); }
               (void) 0; (void) ms; }
             st.cpu_ms += now_ms() - tc;
+        }
+        bool have_cpu_part=!ents.empty();
+#if defined(STRATA_NETWORK_EXPERTS)
+        if (!network_mask.empty()) {
+            if (!have_cpu_part) std::fill(h_part,h_part+static_cast<size_t>(T)*D,0.0f);
+            for (int t=0;t<T;++t) {
+                if (!network_mask[static_cast<size_t>(t)]) continue;
+                for (int column=0;column<D;++column)
+                    h_part[static_cast<size_t>(t)*D+column]+=network_sums[static_cast<size_t>(t)*D+column];
+                cm.cpu[t]=1;
+            }
+            have_cpu_part=true;
+        }
+#endif
+        if (have_cpu_part) {
             dump_sub_host("cpu_part", l.il, p0, T, h_part, (size_t) T * D * 4);
             CK(cudaMemcpyAsync(d.cpu_part, h_part, (size_t) T * D * 4, cudaMemcpyHostToDevice, s));
         }
-        combine(d.ed, ents.empty() ? nullptr : d.cpu_part, d.sh_out, cm, T, D, d.moe_out, s);
+        combine(d.ed, have_cpu_part ? d.cpu_part : nullptr, d.sh_out, cm, T, D, d.moe_out, s);
         dump_sub(d, "moe_out", l.il, p0, T, d.moe_out, (size_t) T * D * 4);
         if (ds4_dbg("DS4_DBG_MOE")) {
             float hp = 0.0f;

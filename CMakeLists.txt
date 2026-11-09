@@ -11,7 +11,7 @@ cmake_minimum_required(VERSION 3.24)
 project(strata VERSION 0.1.56 LANGUAGES CXX)
 # EXPERIMENTAL: the Intel Arc engine, the SYCL port in sycl/ (PR #423; icpx + oneMKL, docs/INTEL_ARC.md). It is its
 # own project that takes the unported sources from src/; with this on, nothing below is configured.
-option(STRATA_NETWORK_EXPERTS "Experimental Linux TCP expert worker (Qwen3.6 decode only)" OFF)
+option(STRATA_NETWORK_EXPERTS "Experimental Linux TCP expert and layer adapters" OFF)
 option(STRATA_ENABLE_SYCL "EXPERIMENTAL: build the Intel Arc (SYCL) engine from sycl/ - docs/INTEL_ARC.md" OFF)
 if(STRATA_ENABLE_SYCL)
   if(STRATA_NETWORK_EXPERTS)
