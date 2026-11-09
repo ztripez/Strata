@@ -80,6 +80,33 @@ to overwrite an existing receipt passed. Astor's first command exited 127 becaus
 Receipts are in `/var/tmp/strata-network-inventory-20261110/`. Observations are
 explicitly uncalibrated. No E6 ranking, reservation or READY admission is claimed.
 
+## E5 capture preparation
+
+`c40fac77` adds explicit per-request greedy/teacher-forced modes to the opt-in
+native harness. CUDA/HIP builds and 46 pre-load admission cases per host passed,
+including both valid mode orders reaching the late arithmetic guard without
+model/device execution. Receipts are in
+`/var/tmp/strata-deepseek-per-request-20261110/`. Default argument formats remain
+unchanged; native mixed-mode capture has not yet passed.
+
+`83da1c06` adds exact baseline-continuation freezing and raw capture repeat checks.
+Four freezer tests and the existing scorer's eight tests passed. The helper also
+reproduced all 131 saved rows of the already accepted HIP ordinary-versus-TCP
+serialization control exactly. This checks the analysis helper against existing
+native data; it is not a new ordinary-reference repeatability run or E5 evidence.
+The first combined unittest invocation used the wrong import style for the
+existing scorer script; that failure and the passing documented invocation are
+retained in `/var/tmp/strata-deepseek-reference-freeze-20261110/`.
+
+A frozen native mixed-mode/reset control is queued behind successful E4 acceptance
+in `/var/tmp/strata-deepseek-e5-native-control-20261110/`. One HIP model will run
+natural EOS, 128 fixed targets from the excluded E3 fixture, then the same EOS
+request again. It must preserve all target feeds and exact before/after EOS rows.
+The control has a 30-minute startup/request bound and two-hour wall bound. Its
+existing-fixture inputs are separate from the prepared five-prompt held-out
+corpus. Fresh E5 reference repeatability, 1,000-position numerical acceptance and
+the eight-task gate remain open.
+
 ## Qwen: bounded tiered-worker milestone completed
 
 The opt-in worker can acknowledge more experts than fit in GPU memory and use
