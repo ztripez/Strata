@@ -1,6 +1,6 @@
 # Distributed fabric checkpoint
 
-Updated 9 November 2026. Source branch `feat/distributed-experts`. The stock
+Updated 10 November 2026. Source branch `feat/distributed-experts`. The stock
 smoke below used `3c4f7ff8`; later campaigns retain their own source snapshots
 and binary hashes. Strata's existing node-local staging remains authoritative.
 
@@ -41,6 +41,39 @@ A frozen mixed-host two-prompt/EOS/restart campaign began at 23:29 CET in
 Fixed-budget allocation probes and the bidirectional tiered-worker format matrix
 are queued behind its successful acceptance. Earlier sections below retain the
 preceding checkpoints; separate frozen executables identify each campaign.
+
+## Prepared combined test and resource collector
+
+On 10 November, the new E4 static fixture was sealed in
+`/var/tmp/strata-deepseek-e4-static-20261110/` and queued behind the allocation
+probes and bidirectional tiered-worker matrix. It compares layer-only, empty
+expert ownership and real remote ownership with the same 384 MiB native GPU
+expert budget on each layer owner. The real placement delegates 128 identities
+at prefix layer 0 and suffix layer 20, in opposite directions. Each expert
+worker has 20 MiB GPU and 20 MiB copied RAM budgets; remaining ownership uses
+the existing native mapped-file CPU lane. Separate expert-process losses must
+recompute locally while the stateful layer sessions finish. This is a frozen
+experiment, not a completed hybrid gate or an orchestrator-installed plan.
+
+The verifier accepted the three completed mixed-host trajectories and rejected
+eight deliberately damaged copies, including wrong identity, stale sequence,
+nonfinite/truncated logits and contradictory metadata. These verifier checks do
+not constitute new native inference. Held-out E5 inputs remain separate.
+
+Source inspection found that the worker's frame receive timeout also covered
+idle startup hashing. `f4ece324` adds an opt-in first-byte idle allowance while
+retaining active frame deadlines and existing defaults. CUDA/HIP builds,
+protocol tests on both hosts, ASan/UBSan on Lucy and eight pre-load admission
+cases per host passed. The E4 fixture uses a one-hour idle allowance and a
+30-second active RPC limit. Native startup integration remains to be qualified;
+receipts are in `/var/tmp/strata-deepseek-worker-idle-20261110/`.
+
+The [resource collector and draft audit](NETWORK_FABRIC_INVENTORY.md) use Control's
+existing probes. Four tests, live read-only snapshots on Lucy/Astor and refusal
+to overwrite an existing receipt passed. Astor's first command exited 127 because
+`uv` was absent from its SSH PATH; the existing absolute installation succeeded.
+Receipts are in `/var/tmp/strata-network-inventory-20261110/`. Observations are
+explicitly uncalibrated. No E6 ranking, reservation or READY admission is claimed.
 
 ## Qwen: bounded tiered-worker milestone completed
 
