@@ -76,9 +76,17 @@ Neither candidate has passed executor replay or runtime memory-fit checks.
 The host-only `DeepSeekWorkerGeometry` guard passes twelve synthetic metadata
 cases. The new `DS4B` layer-capture codec passes roundtrip and malformed-record
 checks for one and sixteen rows on Lucy and Astor. Address/undefined-behavior
-sanitizer checks also pass. The three GPU-free CTest targets (geometry, capture
-codec and the existing expert protocol) pass. These results do not establish
+sanitizer checks also pass. Four GPU-free CTest targets (geometry, capture
+codec, bounded capture delivery and the existing expert protocol) pass. These results do not establish
 device-state capture, a second executor's replay or network layer inference.
+
+The new capture-delivery tests pass on Lucy and Astor; address/undefined-behavior
+sanitizers pass on Lucy. One- and sixteen-row synthetic captures preserve bits
+over loopback TCP and fragmented stream writes. Malformed/truncated frames leave
+the destination host record unchanged; trickle receive and blocked send respect
+one finite frame deadline. The expert and capture protocols share the underlying
+socket I/O routine, and expert-v1 golden-wire tests still pass. These CPU tests
+do not install a layer plan or exercise a GPU session across the network.
 
 The rebuilt HIP worker passes the existing eleven-case Qwen expert comparison
 in default and tiered modes. The tiered probe reports five GPU, five RAM and

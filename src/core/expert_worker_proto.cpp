@@ -1,4 +1,5 @@
 #include "strata/core/expert_worker_wire.hpp"
+#include "strata/core/network_io.hpp"
 #include <charconv>
 #include <chrono>
 
@@ -247,44 +248,6 @@ int expert_worker_listen(const std::string &bind_ip, uint16_t port, int backlog,
 #endif
 }
 
-namespace {
-using Deadline = std::chrono::steady_clock::time_point;
-#if !defined(_WIN32)
-bool transfer(int fd, uint8_t *data, size_t size, bool send, Deadline deadline, std::string *err) {
-    while (size) {
-        const auto left =
-            std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count();
-        if (left <= 0) {
-            if (err)
-                *err = "expert worker frame deadline exceeded";
-            return false;
-        }
-        pollfd pfd{fd, static_cast<short>(send ? POLLOUT : POLLIN), 0};
-        const int rc = ::poll(&pfd, 1, static_cast<int>(left));
-        if (rc < 0 && errno == EINTR)
-            continue;
-        if (rc <= 0) {
-            if (err)
-                *err = rc == 0 ? "expert worker frame deadline exceeded" : std::strerror(errno);
-            return false;
-        }
-        const ssize_t n =
-            send ? ::send(fd, data, size, MSG_NOSIGNAL | MSG_DONTWAIT) : ::recv(fd, data, size, MSG_DONTWAIT);
-        if (n < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK))
-            continue;
-        if (n <= 0) {
-            if (err)
-                *err = n == 0 ? "expert worker disconnected" : std::strerror(errno);
-            return false;
-        }
-        data += n;
-        size -= static_cast<size_t>(n);
-    }
-    return true;
-}
-#endif
-} // namespace
-
 bool expert_worker_send_frame(int fd, ExpertWorkerMsgType type, uint64_t req_id, const void *payload,
                               uint32_t payload_len, std::string *err, int timeout_ms, uint16_t version) {
 #if !defined(_WIN32)
@@ -301,7 +264,7 @@ bool expert_worker_send_frame(int fd, ExpertWorkerMsgType type, uint64_t req_id,
         const auto *p = static_cast<const uint8_t *>(payload);
         bytes.insert(bytes.end(), p, p + payload_len);
     }
-    return transfer(fd, bytes.data(), bytes.size(), true,
+    return network_detail::transfer(fd, bytes.data(), bytes.size(), true,
                     std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms), err);
 #else
     if (err)
@@ -315,7 +278,7 @@ bool expert_worker_recv_frame(int fd, ExpertWorkerFrameHeader &hdr, std::vector<
 #if !defined(_WIN32)
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
     std::vector<uint8_t> bytes(24);
-    if (!transfer(fd, bytes.data(), bytes.size(), false, deadline, err))
+    if (!network_detail::transfer(fd, bytes.data(), bytes.size(), false, deadline, err))
         return false;
     if (!expert_wire_decode(bytes, hdr) || hdr.magic != kExpertWorkerMagic ||
         (hdr.version != kExpertWorkerVersion && hdr.version != kExpertWorkerArithmeticVersion) ||
@@ -325,7 +288,7 @@ bool expert_worker_recv_frame(int fd, ExpertWorkerFrameHeader &hdr, std::vector<
         return false;
     }
     payload.resize(hdr.payload_len);
-    return transfer(fd, payload.data(), payload.size(), false, deadline, err);
+    return network_detail::transfer(fd, payload.data(), payload.size(), false, deadline, err);
 #else
     if (err)
         *err = "network experts require POSIX sockets";

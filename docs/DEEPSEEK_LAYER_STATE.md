@@ -93,6 +93,15 @@ check valid-selection counts against its authoritative window plan. The codec
 does not yet capture device buffers, restore another executor, sequence sessions
 or perform TCP layer RPC. Its synthetic tests are serialization evidence only.
 
+`deepseek_boundary_io.hpp` adds bounded stream delivery of this record, sharing
+the expert protocol's underlying deadline-aware socket transfer routine.
+Synthetic one- and sixteen-row records pass local TCP and fragmented-stream
+roundtrips. Short/disconnected, oversized, wrong-version and stale-identity
+records fail without changing the destination host capture. Trickle-data and
+blocked-send tests enforce one deadline for the complete frame. This transports
+captures only; plan installation, engine mutation, result acknowledgement and
+layer-worker failure semantics are not supplied by this helper.
+
 Before restore, validate the entire message, expected ownership, tensor sizes,
 cache source and exact row intervals. No device or session mutation occurs while
 validating an incomplete frame. Copy data to local buffers, order copies before
@@ -115,8 +124,9 @@ expert work.
    descriptors fail before mutation. A lost layer executor returns a bounded
    request error; no transparent continuation is asserted.
 
-All five remain **NOT RUN** until backed by receipts. This document alone does
-not admit either candidate cut for network execution.
+The codec and stream-framing parts of item 5 have CPU test receipts. Native
+executor replay and the remaining session/fault requirements are **NOT RUN**.
+This document alone does not admit either candidate cut for network execution.
 
 ## Native executor probe
 
