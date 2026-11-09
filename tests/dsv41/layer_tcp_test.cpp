@@ -64,7 +64,7 @@ void memory(const char *phase) {
 std::vector<int> tokens(const std::string &path,int vocab) {
     std::istringstream input(read(path));std::vector<int> out;std::string item;
     while(input>>item) {const int id=number(item.c_str(),vocab-1);out.push_back(id);}
-    check(!out.empty() && out.size()<=1900,"prompt must contain 1..1900 space-separated token IDs");return out;
+    check(!out.empty() && out.size()<=1900,"token file must contain 1..1900 space-separated token IDs");return out;
 }
 int greedy(const std::vector<float> &logits,int vocab) {
     check(logits.size()==static_cast<size_t>(vocab) && std::all_of(logits.begin(),logits.end(),[](float v){return std::isfinite(v);}),"invalid greedy logit row");
@@ -133,7 +133,7 @@ void run_suffix(Model &model,int cut,const std::string &endpoint,int timeout_ms,
         connections,aborted,static_cast<unsigned long long>(executed),static_cast<unsigned long long>(capture_bytes),aborted ? "FAIL":"PASS");
     check(aborted==0,"one or more native suffix sessions aborted; per-connection failures retained");
 }
-void run_generation(Model &model,const DeepSeekLayerContract &c,const std::vector<int> &prompt,int steps,bool ignore_eos,
+void run_generation(Model &model,const DeepSeekLayerContract &c,const std::vector<int> &prompt,const std::vector<int> &targets,int steps,bool ignore_eos,
                     const std::filesystem::path &out,DeepSeekLayerClient *client,int cut,uint64_t &session_floor) {
     std::string error;DeepSeekLayerResult last;uint64_t windows=0,capture_bytes=0;std::vector<float> logits;
     if(client) {
@@ -152,6 +152,8 @@ void run_generation(Model &model,const DeepSeekLayerContract &c,const std::vecto
     std::printf("E3_TCP_REQUEST session=%llu output=%s\n",static_cast<unsigned long long>(client ? session_floor:0),out.string().c_str());
     std::fflush(stdout);
     std::ofstream history(out/"windows.jsonl");check(static_cast<bool>(history),"cannot create token/window history");
+    std::ofstream forced;
+    if(!targets.empty()) {forced.open(out/"targets.jsonl");check(static_cast<bool>(forced),"cannot create teacher-forced target history");}
     auto advance=[&](const int *ids,int count) {
         check(model.feed(ids,count,client ? 0:1,error),error);
         if(client) {check(last.committed_position==static_cast<uint64_t>(model.pos()),"prefix/suffix committed positions differ");logits=last.logits;}
@@ -171,6 +173,18 @@ void run_generation(Model &model,const DeepSeekLayerContract &c,const std::vecto
     }
     int generated=0;bool eos=false;
     for(;generated<steps;++generated) {
+        if(!targets.empty()) {
+            const int target=targets[static_cast<size_t>(generated)];
+            // Score the current row against the fixed target, then consume that
+            // target rather than this executor's prediction. The final advance
+            // saves one extra post-target row, which is not a scored position.
+            forced<<"{\"index\":"<<generated<<",\"window\":"<<windows<<",\"position\":"<<model.pos()
+                  <<",\"target\":"<<target<<",\"predicted\":"<<next<<"}\n";
+            forced.flush();check(static_cast<bool>(forced),"could not persist teacher-forced target history");
+            std::printf("E5_TCP_TARGET index=%d target=%d predicted=%d position=%lld window=%llu\n",generated,target,next,
+                static_cast<long long>(model.pos()),static_cast<unsigned long long>(windows));std::fflush(stdout);
+            next=advance(&target,1);continue;
+        }
         std::printf("E3_TCP_TOKEN index=%d token=%d position=%lld\n",generated,next,static_cast<long long>(model.pos()));std::fflush(stdout);
         // Token 1 is the pinned DeepSeek pack's EOS. Long functional probes
         // explicitly continue through it; the separate EOS probe stops here.
@@ -179,6 +193,11 @@ void run_generation(Model &model,const DeepSeekLayerContract &c,const std::vecto
     }
     if(client) check(client->close(error),error);
     memory("finished");
+    if(!targets.empty()) {
+        std::printf("E5_TCP_TEACHER_FORCING role=%s targets=%d windows=%llu capture_bytes=%llu CAPTURED; quality/performance NOT QUALIFIED\n",
+            client ? "prefix":"reference",generated,static_cast<unsigned long long>(windows),static_cast<unsigned long long>(capture_bytes));
+        return;
+    }
     std::printf("E3_TCP_GENERATION role=%s generated=%d windows=%llu capture_bytes=%llu ignore_eos=%d stop=%s PASS; quality/performance NOT QUALIFIED\n",
         client ? "prefix":"reference",generated,static_cast<unsigned long long>(windows),static_cast<unsigned long long>(capture_bytes),ignore_eos,eos ? "eos":"limit");
 }
@@ -190,6 +209,7 @@ int main(int argc,char **argv) {
         argc-=2;argv+=2;
         auto o=options("");o.verbose=true;
         std::array<uint8_t,32> planned{};bool plan_provided=false,expert_timeout_provided=false;
+        bool teacher_forced=false,decode_mode_provided=false;
         std::set<std::string> configured;
         while(argc>=2 && std::string(argv[1]).starts_with("--")) {
             check(argc>=3,"layer adapter option lacks a value");const std::string flag=argv[1],value=argv[2];
@@ -199,6 +219,10 @@ int main(int argc,char **argv) {
             else if(flag=="--expert-worker-placement") o.expert_worker_placement=value;
             else if(flag=="--expert-worker-timeout") {o.expert_worker_timeout_ms=number(value.c_str(),600000);expert_timeout_provided=true;}
             else if(flag=="--plan-id") {planned=unhex(value);plan_provided=true;}
+            else if(flag=="--decode-mode") {
+                check(value=="greedy" || value=="teacher-forced","decode mode must be greedy or teacher-forced");
+                teacher_forced=value=="teacher-forced";decode_mode_provided=true;
+            }
             else check(false,"unknown layer adapter option");
             argc-=2;argv+=2;
         }
@@ -217,6 +241,7 @@ int main(int argc,char **argv) {
         const bool suffix=role=="suffix",prefix=role=="prefix",reference=role=="reference";
         check((suffix && argc==9) || (prefix && argc>=11 && (argc-7)%4==0) || (reference && argc>=7 && (argc-3)%4==0),
             "usage: suffix PACK CUT LISTEN RPC_MS ACCEPT_MS CONNECTIONS OUT | prefix PACK CUT ENDPOINT WORKER_SHA RPC_MS [PROMPT_IDS DECODE IGNORE_EOS OUT]... | reference PACK [PROMPT_IDS DECODE IGNORE_EOS OUT]...");
+        check(!suffix || !decode_mode_provided,"decode mode belongs to prefix/reference requests, not the suffix service");
         check(setenv("DS4_SYNC","1",1)==0 && setenv("DS4_STREAM","0",1)==0,"cannot select native synchronous windows");
         const int cut=reference ? 20:number(argv[3],24);check(cut==20 || cut==24,"unsupported native layer cut");
         const int timeout_ms=suffix ? number(argv[5],600000):prefix ? number(argv[6],600000):600000;
@@ -227,18 +252,22 @@ int main(int argc,char **argv) {
             check(numeric_endpoint(argv[4]),"invalid numeric layer endpoint");
         }
         if(prefix) (void)unhex(argv[5]);
-        struct Request {std::vector<int> prompt;int steps;bool ignore;std::filesystem::path out;};
+        struct Request {std::vector<int> prompt,targets;int steps;bool ignore;std::filesystem::path out;};
         std::vector<Request> requests;std::set<std::filesystem::path> destinations;
         if(!suffix) {
             const int first=prefix ? 7:3;check((argc-first)/4<=16,"too many requests in one bounded campaign");
             for(int at=first;at<argc;at+=4) {
-                const int steps=number(argv[at+1],1024);const bool ignore=number(argv[at+2],1)!=0;
+                std::vector<int> targets;
+                if(teacher_forced) targets=tokens(argv[at+1],129280);
+                const int steps=teacher_forced ? static_cast<int>(targets.size()):number(argv[at+1],1024);
+                const bool ignore=number(argv[at+2],1)!=0;
+                check(!teacher_forced || (steps<=1024 && ignore),"teacher forcing requires 1..1024 targets and IGNORE_EOS=1");
                 check(steps>0,"decode count must be positive");
                 auto prompt=tokens(argv[at],129280);
                 check(prompt.size()+static_cast<size_t>(steps)<=2048,"generation exceeds declared context");
                 const auto out=std::filesystem::absolute(argv[at+3]).lexically_normal();
                 check(destinations.insert(out).second && !std::filesystem::exists(out),"duplicate or existing request evidence directory");
-                requests.push_back({std::move(prompt),steps,ignore,out});
+                requests.push_back({std::move(prompt),std::move(targets),steps,ignore,out});
             }
         }
         check(strata::ds4::gguf::iq_q8k_activations(),"layer campaign requires explicit DS4_IQ_Q8K=1");
@@ -269,8 +298,8 @@ int main(int argc,char **argv) {
             model.reset();
             if(prefix) {
                 DeepSeekLayerClient client;check(client.connect(argv[4],c,unhex(argv[5]),timeout_ms,error),error);
-                run_generation(model,c,request.prompt,request.steps,request.ignore,request.out,&client,cut,session_floor);
-            } else run_generation(model,c,request.prompt,request.steps,request.ignore,request.out,nullptr,cut,session_floor);
+                run_generation(model,c,request.prompt,request.targets,request.steps,request.ignore,request.out,&client,cut,session_floor);
+            } else run_generation(model,c,request.prompt,request.targets,request.steps,request.ignore,request.out,nullptr,cut,session_floor);
         }
         return 0;
     } catch(const std::exception &e) {std::fprintf(stderr,"E3 TCP native: %s\n",e.what());return 1;}

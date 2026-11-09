@@ -28,6 +28,17 @@ def main() -> None:
         )
         source.touch()
         placement.touch()
+        prompt, targets = root / "prompt.ids", root / "targets.ids"
+        empty, invalid = root / "empty.ids", root / "invalid.ids"
+        excessive, wide = root / "excessive.ids", root / "wide.ids"
+        prompt.write_text("42\n")
+        targets.write_text("1 6 7\n")
+        empty.touch()
+        invalid.write_text("129280\n")
+        excessive.write_text("0 " * 1025)
+        wide.write_text("0 " * 1900)
+        continuation = root / "continuation.ids"
+        continuation.write_text("0 " * 200)
         worker = ["--expert-worker", "127.0.0.1:19171"]
         model = ["--expert-worker-model", str(source)]
         plan = ["--expert-worker-placement", str(placement)]
@@ -43,6 +54,8 @@ def main() -> None:
             str(output),
         ]
         qualified = worker + model + plan + identity
+        teacher = ["--decode-mode", "teacher-forced"]
+        reference = ["reference", "PACK", str(prompt), str(targets), "1", str(output)]
         cases = [
             ("partial-worker", worker + role, "required together", "1"),
             ("partial-source", model + role, "required together", "1"),
@@ -155,6 +168,58 @@ def main() -> None:
                 ],
                 "invalid numeric layer endpoint",
                 "1",
+            ),
+            (
+                "unknown-decode-mode",
+                ["--decode-mode", "sampling"] + role,
+                "decode mode must be greedy or teacher-forced",
+                "1",
+            ),
+            (
+                "suffix-decode-mode",
+                teacher + role,
+                "decode mode belongs to prefix/reference",
+                "1",
+            ),
+            (
+                "teacher-EOS-policy",
+                teacher + reference[:-2] + ["0", str(output)],
+                "teacher forcing requires 1..1024 targets and IGNORE_EOS=1",
+                "1",
+            ),
+            (
+                "teacher-empty-targets",
+                teacher
+                + ["reference", "PACK", str(prompt), str(empty), "1", str(output)],
+                "token file must contain 1..1900",
+                "1",
+            ),
+            (
+                "teacher-invalid-target",
+                teacher
+                + ["reference", "PACK", str(prompt), str(invalid), "1", str(output)],
+                "invalid probe argument",
+                "1",
+            ),
+            (
+                "teacher-too-many-targets",
+                teacher
+                + ["reference", "PACK", str(prompt), str(excessive), "1", str(output)],
+                "teacher forcing requires 1..1024 targets",
+                "1",
+            ),
+            (
+                "teacher-context-overflow",
+                teacher
+                + ["reference", "PACK", str(wide), str(continuation), "1", str(output)],
+                "generation exceeds declared context",
+                "1",
+            ),
+            (
+                "teacher-per32-refused",
+                teacher + reference,
+                "requires explicit DS4_IQ_Q8K=1",
+                "0",
             ),
         ]
         for name, arguments, expected, arithmetic in cases:

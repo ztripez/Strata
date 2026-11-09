@@ -349,3 +349,17 @@ Receipts are in `/var/tmp/strata-deepseek-hybrid-admission-20261109/`.
 Live combined layer/expert execution has NOT RUN; admission and
 build receipts are separate from E4 acceptance. The currently running E3
 campaigns retain their older, separately frozen binaries.
+
+## Teacher-forced capture preparation
+
+The native layer harness now accepts a fixed target-ID file for each request.
+It records the logit window before each target and consumes that target rather
+than its own argmax. This keeps reference/candidate prefixes identical while
+retaining free-running generation as a separate mode. It does not select a new
+continuation or relax the frozen E5 thresholds.
+
+CUDA/HIP harness builds and twenty-eight CLI admission cases per backend passed.
+Live teacher-forced native capture has NOT RUN; no E5 quality pass is asserted.
+Receipts are in `/var/tmp/strata-deepseek-teacher-forcing-20261109/`.
+The active E3 control and queued mixed-host campaign use their earlier frozen
+executables and do not include this change.

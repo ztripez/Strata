@@ -191,6 +191,35 @@ for eligible remote experts. Local expert GPU caching and the RAM store remain
 disabled in this bounded profile. Expert arithmetic, fallback during native
 execution and the combined hybrid path still require live qualification.
 
+### Teacher-forced logit capture
+
+For same-prefix numerical comparisons, put `--decode-mode teacher-forced` before
+the prefix/reference role. Each request's `DECODE` argument then names a token-ID
+file containing the unchanged reference continuation:
+
+```sh
+DS4_IQ_Q8K=1 BUILD/deepseek_layer_tcp_test --experts 6 --decode-mode teacher-forced reference PACK PROMPT_IDS TARGET_IDS 1 REFERENCE_OUT
+DS4_IQ_Q8K=1 BUILD/deepseek_layer_tcp_test --experts 6 --decode-mode teacher-forced prefix PACK 20 WORKER_IP:19170 WORKER_EXE_SHA256 600000 PROMPT_IDS TARGET_IDS 1 PREFIX_OUT
+```
+
+Both runs must receive the same frozen prompt and target IDs. The harness does
+not generate or repair the target file. Each request accepts 1..1024 targets;
+prompt plus targets must fit the declared 2048-token context. `IGNORE_EOS` must
+be `1`, so a target EOS is consumed in the same position on both runs.
+The suffix is unchanged and does not take a decode-mode option.
+
+Before consuming each target, `targets.jsonl` records its index, current position,
+raw-logit window number, target ID and this executor's predicted ID. The model
+then consumes the target rather than its prediction. The last target produces
+one extra saved logit row, which is not a scored target position. Native
+reference mode still checks its greedy choice against the existing sampler.
+Prefix rows retain the same acknowledged DS4R provenance as greedy runs.
+
+The final `E5_TCP_TEACHER_FORCING` line reports captured positions; it makes no
+quality claim. Comparing these rows, freezing held-out prompts, proving baseline
+repeatability and meeting the full E5 numerical/task thresholds remain required.
+CUDA/HIP build and CLI-admission checks are separate from live capture validation.
+
 ### Measured native scope
 
 On 9 November 2026, the first native TCP pilot completed 128 generated steps and
