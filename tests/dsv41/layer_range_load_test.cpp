@@ -31,7 +31,7 @@ void memory(const char *phase) {
 }
 }
 int main(int argc, char **argv) {
-    if (argc!=4) { std::fprintf(stderr,"usage: deepseek_layer_range_load_test PACK BEGIN END\n"); return 2; }
+    if (argc!=4 && argc!=5) { std::fprintf(stderr,"usage: deepseek_layer_range_load_test PACK BEGIN END [EXPERT_VRAM_MIB]\n"); return 2; }
     try {
         check(setenv("DS4_SYNC","1",1)==0 && setenv("DS4_STREAM","0",1)==0,"could not select synchronous probe");
         strata::ds4::Options o;
@@ -39,6 +39,11 @@ int main(int argc, char **argv) {
         o.gpus={0}; o.tp=1; o.threads=false; o.max_context=2048;
         o.experts=6; o.dspark=false; o.dspark_auto=false; o.vision=false; o.prefill_chunk=0;
         o.vram_experts=0; o.vram_experts_auto=false; o.expert_cache=false; o.ssd_cache_gb=0;
+        if (argc==5) {
+            o.expert_vram_mib=number(argv[4]);
+            check(o.expert_vram_mib>=0 && o.expert_vram_mib<=65536,"invalid fixed expert VRAM budget");
+            o.vram_experts=1;
+        }
         o.mmap_experts=1; o.profile="none"; o.profile_readonly=true; o.cpu_threads=2; o.verbose=true;
         check(cudaSetDevice(0)==cudaSuccess,"device selection failed");
         memory("before");
@@ -76,6 +81,7 @@ int main(int argc, char **argv) {
             model.reset();
             std::printf("E3_ASSIGNED_LOAD layers=[%d,%d) effective_experts=6 iq_q8k=%d PASS; inference NOT RUN\n",
                         o.layer_begin,o.layer_end,strata::ds4::gguf::iq_q8k_activations());
+            if (argc==5) std::printf("E4_FIXED_EXPERT_BUDGET mib=%lld PASS; inference NOT RUN\n",static_cast<long long>(o.expert_vram_mib));
         }
         memory("released");
         return 0;

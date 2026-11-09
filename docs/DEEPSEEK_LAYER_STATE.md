@@ -204,7 +204,10 @@ its live loading/tier/arithmetic qualification is separate from the CPU-only
 E2/E3 receipts below. See [the fixed-budget option](DEEPSEEK_LAYER_RPC.md#optional-fixed-local-gpu-expert-residency).
 
 `deepseek_layer_range_load_test PACK BEGIN END` checks the loader's per-layer
-allocation invariant and these API rejections. Cut-20 load-only probes exited 0
+allocation invariant and these API rejections. An optional final `EXPERT_VRAM_MIB`
+argument exercises fixed-budget loading or refusal; this adds allocation evidence,
+not native inference or fresh loaded-artifact hash verification.
+Cut-20 load-only probes exited 0
 on Astor `[0,20)` and Lucy `[20,40)`. Their unowned layers reported zero weights,
 window rings and expert arenas. Full raw receipts and the measurement limits are
 in the [fabric checkpoint](DISTRIBUTED_FABRIC_STATUS.md#e3-assigned-only-allocation-probe).
