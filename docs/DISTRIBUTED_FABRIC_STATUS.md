@@ -405,3 +405,16 @@ Live tiered RPC, all-eight-format arithmetic, worker fallback and combined hybri
 inference remain NOT RUN to acceptance. The new opt-in fixture uses fresh
 connections for each immutable layer plan; its seeded cases and tolerances stay
 unchanged. See [the tier contract and commands](DEEPSEEK_EXPERT_TIERS.md).
+
+## Same-prefix numerical scorer preparation
+
+The comparison tool now validates complete native teacher-forced trajectories
+and scores fixed-prefix logits. An explicit greedy-reference mode preserves and
+checks the baseline's own selected continuation. Its analytic tests cover KL
+direction, normalization, underflow and first-maximum selection. Artifact tests
+reject mismatched consumed tokens, target/window misalignment, incorrect argmax
+metadata, nonfinite/truncated rows and incomplete/extra captures.
+
+Eight synthetic test methods passed. Live teacher-forced capture, the frozen
+held-out corpus, baseline repeatability and E5 numerical/task acceptance remain
+open. See [the comparison commands](DEEPSEEK_LAYER_RPC.md#compare-completed-captures).

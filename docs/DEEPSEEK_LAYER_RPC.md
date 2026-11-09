@@ -240,6 +240,39 @@ quality claim. Comparing these rows, freezing held-out prompts, proving baseline
 repeatability and meeting the full E5 numerical/task thresholds remain required.
 CUDA/HIP build and CLI-admission checks are separate from live capture validation.
 
+### Compare completed captures
+
+The numerical tool checks the exact prompt and target IDs, window positions,
+pre-consumption target records, complete float32 rows, finite logits and recorded
+argmax IDs. It requires the final post-target row and rejects missing or extra
+row files. All captured rows are checked; only fixed target positions contribute
+to mean KL and top-1 agreement.
+
+```sh
+uv run --no-project --with pydantic==2.14.2 tools/compare_ds4_layer_logits.py REFERENCE_OUT CANDIDATE_OUT PROMPT_IDS TARGET_IDS --output NEW_REPORT.json
+uv run --no-project --with pydantic==2.14.2 tools/test_compare_ds4_layer_logits.py
+```
+
+Both captures normally use teacher forcing. To compare an ordinary greedy
+reference with a teacher-forced candidate, explicitly add
+`--reference-mode greedy`. The tool then requires every frozen target to be the
+reference's actual selected token, and verifies that the recorded feeds consume
+those targets. It does not silently substitute a different continuation or infer
+the reference mode from missing files. Keep the baseline's complete recorded
+continuation and successful native exit.
+
+Reports retain per-position KL(reference || candidate) in nats, first-maximum
+IDs, aggregate metrics and hashes of inputs/ordered raw rows. Float64 centered
+log probabilities avoid overflow and loss of normalization at large common
+offsets; tiny signed roundoff is retained. The report makes no E5 pass claim.
+The campaign still verifies model/pack/executable identities and acknowledged
+delivery, baseline repeatability, the frozen five-prompt/1,000-position corpus,
+the numerical thresholds and the separate eight-task gate.
+
+The scorer passed analytic divergence/direction/normalization controls and
+malformed/incomplete capture tests. This synthetic evidence does not qualify
+native teacher-forced execution or full-model output quality.
+
 ### Measured native scope
 
 On 9 November 2026, the first native TCP pilot completed 128 generated steps and
