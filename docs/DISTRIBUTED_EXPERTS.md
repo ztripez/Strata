@@ -17,7 +17,52 @@ process physical RAM (`Rss`) from **`42.05 GiB` to `8.31–9.23 GiB` (`-78%` to 
 while sustaining **`49.61–50.44 tok/s`** warm median decode and preserving clean
 mapped-GGUF fallback on worker disconnect.
 
-## Current checkpoint: full-model functional, fault-recovery, 10 GbE placement, and low-RAM residency sweep
+## Opt-in worker ownership beyond VRAM, 9 November 2026
+
+`strata-expert-worker --expert-vram-mib N --resident-budget-mib M` separates
+acknowledged ownership from permanent GPU residency. In plan order, experts fill
+the explicit GPU budget, then an ordinary host-RAM arena; remaining owned experts
+use the read-only GGUF mapping. Nonresident assignments reuse `ExpertPool` and
+`NativeFmt` layout overrides from the existing native CPU path. GPU assignments
+keep the existing kernels. This is a static budget adapter, with no eviction,
+migration or new replacement policy. The default worker still requires all
+assigned experts in VRAM.
+
+Budgets cover expert weight arenas, not device buffers, CPU scratch, process RSS
+or the OS page cache. Both budgets may be zero. A host budget requires the GPU
+budget flag. Unsupported CPU formats fail installation rather than silently
+changing placement. READY's count acknowledges all owned experts; its VRAM-byte
+field counts only GPU weights. The existing primary summary's `resident_experts`
+label therefore means acknowledged ownership for a tiered worker; use
+`strata-worker-tiers` for GPU/RAM/mapped counts and `strata-worker-tier-execution`
+for executed assignments. Host work is included in `kernel_us`; that field is
+not exclusively GPU event time in tiered mode.
+
+The first CUDA-primary/HIP-worker test assigned all 10,240 Qwen experts (about
+18.75 GiB, exceeding the worker card's 16 GiB) with 8 MiB GPU and 8 MiB host
+budgets. The worker installed four GPU experts, four RAM experts and 10,232 mapped
+experts. Eleven numerical comparisons passed, including mixed-tier weighted
+sums and sparse multi-token routing. Execution counters were GPU 5, RAM 5,
+mapped 15. The oracle uses independent packed reference blobs and selects the
+native CUDA or standalone CPU evaluation for each assignment, with the original
+tolerances. All measured execution-reference differences were zero. Default
+all-VRAM expert parity also passed all eleven comparisons on the rebuilt worker.
+
+Evidence is in `/var/tmp/strata-worker-tiers-20261109-3X8vQt/` on Lucy and Astor.
+The subsequent six-case full-model campaign completed two 128-token prompts per
+inference case. Zero ownership matched baseline tokens exactly; normal remote
+execution acknowledged 96,473 mapped-expert assignments with no fallback.
+Disconnect and stall cases finished through explicit local fallback, and an
+unavailable worker failed before READY. The final model SHA-256 matched stock.
+The full-model workload selected no worker GPU/RAM experts (those first few
+identities were already in the primary GPU cache); all three tiers were exercised
+by the separate expert fixtures. Remote continuation differed at 125/128 and
+121/128 positions from baseline; this does not clear full-model output quality.
+These are bounded expert-level results. Full-model output quality, physical SSD
+read attribution, NFS qualification, and cost-aware worker tier selection are
+separate requirements. Mapped execution may be served from the OS page cache.
+
+## Earlier checkpoint: full-model functional, fault-recovery, 10 GbE placement, and low-RAM residency sweep
 
 Following the Kingston-only integrity and expert-parity recheck on 5 November 2026,
 full-model CLI logit comparisons, the 6-case `--serve` qualification campaign

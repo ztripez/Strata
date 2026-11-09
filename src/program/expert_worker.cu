@@ -4,6 +4,8 @@
 // Preloads an immutable set of (layer, expert) native blobs into VRAM upon INSTALL_PLAN (or at startup via
 // --placement), executes grouped expert kernels + GPU-side weighted partial-sum reduction per EXECUTE request,
 // and returns at most one FP32 vector per token plus explicit coverage mask and microsecond stage timings.
+// Opt-in --expert-vram-mib / --resident-budget-mib separate ownership from
+// residency, using the existing native CPU pool for RAM and mapped-file experts.
 
 #include "strata/artifact/gguf_reader.hpp"
 #include "strata/core/expert_worker_identity.hpp"
@@ -12,6 +14,7 @@
 #include "strata/kernels/iq_kernels.hpp"
 #include "strata/kernels/native_mmvq.hpp"
 #include "strata/kernels/native_moe.hpp"
+#include "strata/kernels/cpu/pool.hpp"
 #include <set>
 #include <thread>
 
@@ -111,6 +114,14 @@ struct WorkerContext {
     uint8_t *d_arena = nullptr;
     size_t arena_bytes = 0;
     uint32_t loaded_count = 0;
+    // Opt-in static placement budgets. Local execution reuses the native CPU pool
+    // and its mapped-GGUF NativeFmt overrides; no replacement cache is introduced.
+    int64_t expert_vram_mib = -1;
+    size_t resident_budget_mib = 0;
+    std::vector<uint8_t> host_arena;
+    std::vector<const uint8_t *> host_blob_of;
+    std::unique_ptr<K::cpu::ExpertPool> cpu_pool;
+    uint64_t gpu_assignments = 0, ram_assignments = 0, mapped_assignments = 0;
 
     // Execution buffers on device
     cudaStream_t stream = nullptr;
@@ -135,6 +146,9 @@ struct WorkerContext {
         loaded_count = 0;
         std::fill(slot_of.begin(), slot_of.end(), -1);
         slot_offset.clear();
+        host_arena.clear();
+        host_blob_of.clear();
+        gpu_assignments = ram_assignments = mapped_assignments = 0;
     }
 
     void close() {
@@ -312,7 +326,7 @@ bool init_worker_model(const std::string &model_path, int device, WorkerContext 
     return true;
 }
 
-bool install_worker_plan(WorkerContext &ctx, const ExpertWorkerPair *pairs, uint32_t n_pairs,
+bool install_gpu_plan(WorkerContext &ctx, const ExpertWorkerPair *pairs, uint32_t n_pairs,
                          ExpertWorkerReadyPayload &out_ready, std::string &err) {
     const auto t0 = Clock::now();
     ctx.close_cache();
@@ -421,7 +435,68 @@ bool install_worker_plan(WorkerContext &ctx, const ExpertWorkerPair *pairs, uint
     return true;
 }
 
-bool execute_worker_request(WorkerContext &ctx, const ExpertWorkerExecuteFixed &ef,
+bool install_worker_plan(WorkerContext &ctx, const ExpertWorkerPair *pairs, uint32_t n_pairs,
+                         ExpertWorkerReadyPayload &ready, std::string &err) {
+    if (ctx.expert_vram_mib < 0) return install_gpu_plan(ctx, pairs, n_pairs, ready, err);
+    const auto start = Clock::now();
+    ready = {};
+    ready.status = static_cast<uint32_t>(ExpertWorkerErrorCode::PLAN_LOAD_FAILED);
+    std::vector<ExpertWorkerPair> gpu, cpu;
+    std::set<std::pair<int32_t, int32_t>> seen;
+    size_t gpu_bytes = 0, host_bytes = 0;
+    const size_t gpu_budget = static_cast<size_t>(ctx.expert_vram_mib) << 20;
+    const size_t host_budget = ctx.resident_budget_mib << 20;
+    for (uint32_t i = 0; i < n_pairs; ++i) {
+        const auto p = pairs[i];
+        if (p.layer < 0 || p.layer >= ctx.total_layers || p.expert < 0 || p.expert >= ctx.geom.n_expert ||
+            !seen.emplace(p.layer, p.expert).second) {
+            err = "invalid or duplicate tiered ownership pair";
+            return false;
+        }
+        const auto &wl = ctx.layers[p.layer];
+        K::cpu::NativeFmt fmt;
+        if (!K::cpu::native_fmt(wl.layout.gu_type, wl.layout.d_type, ctx.geom.n_embd, ctx.geom.n_ff, fmt, err))
+            return false;
+        if (fmt.bytes != wl.layout.bytes || fmt.up_off != wl.layout.up_off || fmt.down_off != wl.layout.down_off ||
+            fmt.act_bytes > K::cpu::kNativeActBytes || fmt.h_bytes > K::cpu::kNativeHBytes) {
+            err = "worker CPU/GPU expert layouts differ";
+            return false;
+        }
+        if (wl.slot_stride <= gpu_budget - gpu_bytes) {
+            gpu.push_back(p);
+            gpu_bytes += wl.slot_stride;
+        } else cpu.push_back(p);
+    }
+    if (!install_gpu_plan(ctx, gpu.data(), static_cast<uint32_t>(gpu.size()), ready, err)) return false;
+    for (const auto p : cpu) {
+        const auto bytes = ctx.layers[p.layer].slot_stride;
+        if (bytes <= host_budget - host_bytes) host_bytes += bytes;
+    }
+    ctx.host_arena.resize(host_bytes);
+    ctx.host_blob_of.assign(ctx.slot_of.size(), nullptr);
+    size_t off = 0, host_experts = 0;
+    for (const auto p : cpu) {
+        const auto &wl = ctx.layers[p.layer];
+        const auto idx = static_cast<size_t>(p.layer) * ctx.geom.n_expert + p.expert;
+        ctx.slot_of[idx] = -2; // acknowledged CPU-owned; -1 remains unowned
+        if (wl.slot_stride <= host_bytes - off) {
+            auto *dst = ctx.host_arena.data() + off;
+            pack_expert_blob(wl, p.expert, dst);
+            ctx.host_blob_of[idx] = dst;
+            off += wl.slot_stride;
+            ++host_experts;
+        }
+    }
+    if (!cpu.empty() && !ctx.cpu_pool) ctx.cpu_pool = std::make_unique<K::cpu::ExpertPool>(0, false);
+    ctx.loaded_count = n_pairs;
+    ready.loaded_count = n_pairs; // acknowledge logical ownership, including mapped experts
+    ready.load_time_us = us_since(start);
+    std::fprintf(stderr, "strata-worker-tiers: owned=%u gpu=%zu ram=%zu mapped=%zu gpu_bytes=%zu ram_bytes=%zu\n",
+                 n_pairs, gpu.size(), host_experts, cpu.size() - host_experts, gpu_bytes, host_bytes);
+    return true;
+}
+
+bool execute_gpu_request(WorkerContext &ctx, const ExpertWorkerExecuteFixed &ef,
                             const ExpertWorkerAssignment *assigns, const float *acts, ExpertWorkerResultFixed &rf,
                             uint8_t *out_mask, float *out_sums, std::string &err) {
     const auto t0 = Clock::now();
@@ -599,6 +674,74 @@ bool execute_worker_request(WorkerContext &ctx, const ExpertWorkerExecuteFixed &
     return true;
 }
 
+bool execute_worker_request(WorkerContext &ctx, const ExpertWorkerExecuteFixed &ef,
+                            const ExpertWorkerAssignment *assigns, const float *acts, ExpertWorkerResultFixed &rf,
+                            uint8_t *out_mask, float *out_sums, std::string &err) {
+    if (ctx.expert_vram_mib < 0) return execute_gpu_request(ctx, ef, assigns, acts, rf, out_mask, out_sums, err);
+    const auto start = Clock::now();
+    const size_t N = ctx.geom.n_embd;
+    if (ef.layer < 0 || ef.layer >= ctx.total_layers || ef.n_tokens == 0 || ef.n_tokens > kMaxTokens ||
+        ef.n_embd != N || ef.n_assignments > kMaxCap) { err = "invalid tiered request geometry"; return false; }
+    std::set<std::pair<uint16_t, uint16_t>> seen;
+    std::vector<ExpertWorkerAssignment> gpu, cpu;
+    for (uint32_t i = 0; i < ef.n_assignments; ++i) {
+        const auto a = assigns[i];
+        if (a.token_idx >= ef.n_tokens || a.slot_idx >= ctx.top_k || a.expert_id < 0 ||
+            a.expert_id >= ctx.geom.n_expert || !std::isfinite(a.weight) ||
+            !seen.emplace(a.token_idx, a.slot_idx).second) { err = "invalid tiered assignment"; return false; }
+        const auto slot = ctx.slot_of[static_cast<size_t>(ef.layer) * ctx.geom.n_expert + a.expert_id];
+        if (slot == -1) { err = "tiered request for unowned expert"; return false; }
+        (slot >= 0 ? gpu : cpu).push_back(a);
+    }
+    auto ge = ef;
+    ge.n_assignments = static_cast<uint32_t>(gpu.size());
+    if (!execute_gpu_request(ctx, ge, gpu.data(), acts, rf, out_mask, out_sums, err)) return false;
+    if (rf.status != 0) return true;
+    ctx.gpu_assignments += gpu.size();
+    if (!cpu.empty()) {
+        const auto cpu_start = Clock::now();
+        const auto &wl = ctx.layers[ef.layer];
+        K::cpu::NativeFmt fmt;
+        if (!K::cpu::native_fmt(wl.layout.gu_type, wl.layout.d_type, N, ctx.geom.n_ff, fmt, err)) return false;
+        std::vector<uint8_t> quant(static_cast<size_t>(ef.n_tokens) * K::cpu::kNativeActBytes);
+        for (uint32_t t = 0; t < ef.n_tokens; ++t)
+            K::cpu::native_quant_act(fmt, acts + t * N, quant.data() + t * K::cpu::kNativeActBytes);
+        std::vector<float> parts(cpu.size() * N);
+        std::vector<K::cpu::NativeFmt> formats(cpu.size(), fmt);
+        std::vector<K::cpu::ExpertJobMulti> jobs(cpu.size());
+        for (size_t i = 0; i < cpu.size(); ++i) {
+            const auto a = cpu[i];
+            const size_t idx = static_cast<size_t>(ef.layer) * ctx.geom.n_expert + a.expert_id;
+            const uint8_t *blob = ctx.host_blob_of[idx];
+            if (blob) ++ctx.ram_assignments;
+            else {
+                ++ctx.mapped_assignments;
+                blob = wl.src_g + static_cast<size_t>(a.expert_id) * wl.src_gsz;
+                formats[i].up_off = static_cast<size_t>(reinterpret_cast<uintptr_t>(wl.src_u + static_cast<size_t>(a.expert_id) * wl.src_gsz) - reinterpret_cast<uintptr_t>(blob));
+                formats[i].down_off = static_cast<size_t>(reinterpret_cast<uintptr_t>(wl.src_d + static_cast<size_t>(a.expert_id) * wl.src_dsz) - reinterpret_cast<uintptr_t>(blob));
+            }
+            jobs[i].blob = blob;
+            jobs[i].fmt = &formats[i];
+            jobs[i].nt = 1;
+            jobs[i].nact[0] = quant.data() + a.token_idx * K::cpu::kNativeActBytes;
+            jobs[i].out[0] = parts.data() + i * N;
+        }
+        for (size_t i = 0; i < jobs.size(); i += K::cpu::ExpertPool::kMaxSplitMulti)
+            ctx.cpu_pool->run_split_multi_native(fmt, jobs.data() + i,
+                static_cast<int>(std::min(jobs.size() - i, static_cast<size_t>(K::cpu::ExpertPool::kMaxSplitMulti))));
+        for (size_t i = 0; i < cpu.size(); ++i) {
+            const auto a = cpu[i];
+            out_mask[a.token_idx] = 1;
+            for (size_t c = 0; c < N; ++c)
+                out_sums[a.token_idx * N + c] = std::fma(a.weight, parts[i * N + c], out_sums[a.token_idx * N + c]);
+        }
+        rf.kernel_us += us_since(cpu_start); // includes host quantization and reduction
+    }
+    rf.n_assignments_executed = ef.n_assignments;
+    rf.total_us = us_since(start);
+    return true;
+}
+
 bool serve_session(int cfd, WorkerContext &ctx, int timeout_ms, bool verbose) {
     std::string err;
     if (!expert_worker_set_socket_opts(cfd, timeout_ms, &err)) {
@@ -694,7 +837,10 @@ bool serve_session(int cfd, WorkerContext &ctx, int timeout_ms, bool verbose) {
                 return false;
             if (!installed)
                 return false;
-            std::fprintf(
+            if (ctx.expert_vram_mib >= 0)
+                std::fprintf(stderr, "strata-expert-worker: READY owned %u experts (%llu bytes VRAM); GPU slots verified, CPU layouts checked, %llu us\n",
+                             ready.loaded_count, (unsigned long long)ready.vram_used_bytes, (unsigned long long)ready.load_time_us);
+            else std::fprintf(
                 stderr,
                 "strata-expert-worker: READY loaded %u experts (%llu bytes VRAM), verified every slot, %llu us\n",
                 ready.loaded_count, (unsigned long long)ready.vram_used_bytes, (unsigned long long)ready.load_time_us);
@@ -738,6 +884,10 @@ bool serve_session(int cfd, WorkerContext &ctx, int timeout_ms, bool verbose) {
                                       static_cast<uint32_t>(w.bytes.size()), &err, timeout_ms))
             return false;
     }
+    if (ctx.expert_vram_mib >= 0)
+        std::fprintf(stderr, "strata-worker-tier-execution: gpu=%llu ram=%llu mapped=%llu\n",
+                     (unsigned long long)ctx.gpu_assignments, (unsigned long long)ctx.ram_assignments,
+                     (unsigned long long)ctx.mapped_assignments);
     if (verbose)
         std::fprintf(stderr, "strata-expert-worker: session closed: %s\n", err.c_str());
     return true;
@@ -752,6 +902,8 @@ int main(int argc, char **argv) {
     int timeout_ms = 30000;
     int max_sessions = 0; // 0 = run indefinitely accepting sequential sessions
     bool verbose = false;
+    int64_t expert_vram_mib = -1;
+    size_t resident_budget_mib = 0;
 
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -772,17 +924,32 @@ int main(int argc, char **argv) {
             timeout_ms = std::atoi(next().c_str());
         else if (a == "--max-sessions")
             max_sessions = std::atoi(next().c_str());
+        else if (a == "--expert-vram-mib" || a == "--resident-budget-mib") {
+            const auto value = next();
+            if (value.empty() || value.find_first_not_of("0123456789") != std::string::npos || value.size() > 7 ||
+                std::stoull(value) > 1048576) {
+                std::fprintf(stderr, "strata-expert-worker: %s requires 0..1048576 MiB\n", a.c_str());
+                return 2;
+            }
+            if (a == "--expert-vram-mib") expert_vram_mib = static_cast<int64_t>(std::stoull(value));
+            else resident_budget_mib = static_cast<size_t>(std::stoull(value));
+        }
         else if (a == "--verbose")
             verbose = true;
         else {
             std::fprintf(
                 stderr,
                 "usage: strata-expert-worker --model GGUF [--bind IP:PORT]\n"
-                "                            [--device 0] [--timeout-ms 30000] [--max-sessions N] [--verbose]\n");
+                "                            [--device 0] [--timeout-ms 30000] [--max-sessions N] [--verbose]\n"
+                "                            [--expert-vram-mib N [--resident-budget-mib N]]\n");
             return 2;
         }
     }
 
+    if (resident_budget_mib && expert_vram_mib < 0) {
+        std::fprintf(stderr, "strata-expert-worker: --resident-budget-mib requires --expert-vram-mib\n");
+        return 2;
+    }
     if (timeout_ms <= 0 || timeout_ms > 600000 || max_sessions < 0) {
         std::fprintf(stderr, "strata-expert-worker: invalid timeout or session limit\n");
         return 2;
@@ -805,6 +972,8 @@ int main(int argc, char **argv) {
     }
 
     WorkerContext ctx;
+    ctx.expert_vram_mib = expert_vram_mib;
+    ctx.resident_budget_mib = resident_budget_mib;
     std::string err;
     try {
         if (!init_worker_model(model_path, device, ctx, err)) {

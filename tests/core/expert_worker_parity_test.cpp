@@ -15,6 +15,8 @@
 #include <cuda_runtime.h>
 
 #include <cmath>
+#include <algorithm>
+#include <set>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -65,6 +67,8 @@ int main(int argc, char **argv) {
     std::string model_path;
     std::string worker_ep;
     double tol = 1e-3;
+    int64_t worker_vram_mib = -1;
+    bool all_experts = false;
 
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -81,14 +85,16 @@ int main(int argc, char **argv) {
             worker_ep = next();
         else if (a == "--tol")
             tol = std::atof(next().c_str());
+        else if (a == "--worker-vram-mib") worker_vram_mib = std::stoll(next());
+        else if (a == "--all-experts") all_experts = true;
         else {
-            std::fprintf(stderr, "usage: expert_worker_parity_test --model GGUF --worker IP:PORT [--tol 1e-3]\n");
+            std::fprintf(stderr, "usage: expert_worker_parity_test --model GGUF --worker IP:PORT [--tol 1e-3] [--all-experts] [--worker-vram-mib N]\n");
             return 2;
         }
     }
 
     if (model_path.empty() || worker_ep.empty()) {
-        std::fprintf(stderr, "usage: expert_worker_parity_test --model GGUF --worker IP:PORT [--tol 1e-3]\n");
+        std::fprintf(stderr, "usage: expert_worker_parity_test --model GGUF --worker IP:PORT [--tol 1e-3] [--all-experts] [--worker-vram-mib N]\n");
         return 2;
     }
 
@@ -118,10 +124,28 @@ int main(int argc, char **argv) {
     std::vector<int32_t> test_layers = {0, 1, static_cast<int32_t>(g.n_layers / 2),
                                         static_cast<int32_t>(g.n_layers - 1)};
     std::vector<ExpertWorkerPair> plan;
-    for (int32_t l : test_layers) {
-        for (int32_t e = 0; e < 8; ++e) {
+    std::vector<int32_t> plan_layers = test_layers;
+    if (all_experts) { plan_layers.clear(); for (int32_t l = 0; l < g.n_layers; ++l) plan_layers.push_back(l); }
+    for (int32_t l : plan_layers) {
+        for (int32_t e = 0; e < (all_experts ? g.n_expert : 8); ++e) {
             plan.push_back({l, e});
         }
+    }
+    // Independent execution oracle: static budget consumes each layer's padded
+    // expert size in plan order; CPU weights are evaluated from packed reference
+    // blobs, independently of the worker's RAM/mapped layout overrides.
+    std::set<std::pair<int32_t, int32_t>> gpu_pairs;
+    if (worker_vram_mib >= 0) {
+        size_t remaining = static_cast<size_t>(worker_vram_mib) << 20;
+        for (const auto p : plan) {
+            const auto *tg = gm.find("blk." + std::to_string(p.layer) + ".ffn_gate_exps.weight");
+            const auto *td = gm.find("blk." + std::to_string(p.layer) + ".ffn_down_exps.weight");
+            if (!tg || !td) return 1;
+            const auto layout = K::native_expert_layout(tg->type, td->type, N, FF);
+            const auto bytes = (layout.bytes + 255u) & ~size_t(255u);
+            if (bytes <= remaining) { gpu_pairs.emplace(p.layer, p.expert); remaining -= bytes; }
+        }
+        std::printf("Tiered oracle: %zu GPU experts; remaining owned experts use CPU reference\n", gpu_pairs.size());
     }
 
     if (!net.install_plan(plan, err)) {
@@ -202,6 +226,8 @@ int main(int argc, char **argv) {
             cudaDeviceSynchronize();
             cudaMemcpy(out_gpu, d_out, N * sizeof(float), cudaMemcpyDeviceToHost);
         }
+        if (worker_vram_mib >= 0 && !gpu_pairs.count({layer, expert}) && out_gpu && out_cpu)
+            std::copy(out_cpu, out_cpu + N, out_gpu);
         return true;
     };
 
@@ -228,7 +254,7 @@ int main(int argc, char **argv) {
         const auto mc = compare_vectors(ref_cpu.data(), got.data(), N);
         const bool pass = (mg.nan_inf_cnt == 0 && mg.rel_l2_err <= tol && mg.cosine_sim >= 0.99999 &&
                            mc.nan_inf_cnt == 0 && mc.max_abs_err <= 2e-3 && mc.cosine_sim >= 0.9995);
-        std::printf("CASE single_expert layer=%2d expert=3 vs_gpu(max_abs=%.2e,rel_l2=%.2e,cos=%.7f) "
+        std::printf("CASE single_expert layer=%2d expert=3 vs_execution(max_abs=%.2e,rel_l2=%.2e,cos=%.7f) "
                     "vs_cpu(max_abs=%.2e,rel_l2=%.2e,cos=%.7f) nan=%d -> %s\n",
                     l, mg.max_abs_err, mg.rel_l2_err, mg.cosine_sim, mc.max_abs_err, mc.rel_l2_err, mc.cosine_sim,
                     mg.nan_inf_cnt, pass ? "PASS" : "FAIL");
@@ -265,7 +291,7 @@ int main(int argc, char **argv) {
         const auto mc = compare_vectors(ref_cpu.data(), got.data(), N);
         const bool pass = (mg.nan_inf_cnt == 0 && mg.rel_l2_err <= tol && mg.cosine_sim >= 0.99999 &&
                            mc.nan_inf_cnt == 0 && mc.max_abs_err <= 2e-3 && mc.cosine_sim >= 0.9995);
-        std::printf("CASE multi_expert_sum layer=%2d n_exp=4 vs_gpu(max_abs=%.2e,rel_l2=%.2e,cos=%.7f) "
+        std::printf("CASE multi_expert_sum layer=%2d n_exp=4 vs_execution(max_abs=%.2e,rel_l2=%.2e,cos=%.7f) "
                     "vs_cpu(max_abs=%.2e,rel_l2=%.2e,cos=%.7f) nan=%d -> %s\n",
                     l, mg.max_abs_err, mg.rel_l2_err, mg.cosine_sim, mc.max_abs_err, mc.rel_l2_err, mc.cosine_sim,
                     mg.nan_inf_cnt, pass ? "PASS" : "FAIL");
@@ -311,7 +337,7 @@ int main(int argc, char **argv) {
             const auto mc = compare_vectors(ref_cpu.data() + t * N, got.data() + t * N, N);
             const bool pass = (mg.nan_inf_cnt == 0 && mg.rel_l2_err <= tol && mg.cosine_sim >= 0.99999 &&
                                mc.nan_inf_cnt == 0 && mc.max_abs_err <= 2e-3 && mc.cosine_sim >= 0.9995);
-            std::printf("CASE multi_token_shared layer=%2d tok=%u vs_gpu(max_abs=%.2e,rel_l2=%.2e,cos=%.7f) "
+            std::printf("CASE multi_token_shared layer=%2d tok=%u vs_execution(max_abs=%.2e,rel_l2=%.2e,cos=%.7f) "
                         "vs_cpu(max_abs=%.2e,rel_l2=%.2e,cos=%.7f) nan=%d -> %s\n",
                         l, t, mg.max_abs_err, mg.rel_l2_err, mg.cosine_sim, mc.max_abs_err, mc.rel_l2_err,
                         mc.cosine_sim, mg.nan_inf_cnt, pass ? "PASS" : "FAIL");
