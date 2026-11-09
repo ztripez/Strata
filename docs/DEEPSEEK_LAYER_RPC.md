@@ -249,4 +249,12 @@ The natural response was “The capital of France is Paris.” followed by EOS;
 the functional loop explicitly continued after EOS to reach 128 steps.
 Both native processes and the driver exited successfully. This is one-prompt
 functional evidence, not broad numerical quality, performance or complete E3
-acceptance. The later same-backend multi-request/fault campaign remains separate.
+acceptance.
+
+The later HIP same-backend campaign passed at 23:29 CET: two 128-step probes
+and a natural EOS request had exact tokens and 270 byte-identical saved logit
+rows against the ordinary reference. Real-native duplicate/incarnation tests and
+the planned fourth-request suffix loss also passed their delivery/clean-error
+contracts. The driver exited 0; intentional loss-request/remote-command failures
+remain recorded separately. These controls precede full mixed-host long-decode,
+actual restart, E5 quality and memory/performance qualification.

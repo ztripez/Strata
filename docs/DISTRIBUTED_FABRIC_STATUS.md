@@ -4,7 +4,21 @@ Updated 9 November 2026. Source branch `feat/distributed-experts`. The stock
 smoke below used `3c4f7ff8`; later campaigns retain their own source snapshots
 and binary hashes. Strata's existing node-local staging remains authoritative.
 
-Latest measured layer checkpoint, 9 November at 21:33 CET: E2 passed both cuts
+Latest control checkpoint, 9 November at 23:29 CET: the native HIP TCP control
+passed two distinct 128-step probes and a separate EOS request with exact tokens
+and all 270 saved logit rows byte-identical to the ordinary HIP reference.
+The real native suffix retained identical duplicate results and rejected
+conflicting/late duplicates and stale incarnations. Healthy sessions consumed
+IDs 4, 5 and 6 after the negative probes. Killing the owned suffix after the
+fourth request's acknowledged prompt made the caller exit with a bounded
+disconnect error, without publishing an unacknowledged continuation.
+The accepted driver exited 0. The loss request exited 1 and its remote worker's
+SSH command exited 255 by design; raw exits and logs are retained. An exact
+private-executable check found no remaining native control processes.
+Receipts are in `/var/tmp/strata-deepseek-e3-batch-control-20261109/`.
+This is a same-backend serialization/lifecycle control, not full E3 or E5 acceptance.
+
+Earlier mixed-host checkpoint at 21:33 CET: E2 passed both cuts
 with 128 decode steps; the assigned-only HIP cut20 oracle also passed 128 steps.
 The first real mixed-backend layer-only run passed: Astor owned `[0,20)`, Lucy
 owned `[20,40)`, and all 130 windows were acknowledged over persistent TCP.
@@ -22,19 +36,11 @@ capacity or performance acceptance. Raw receipts are in
 `/var/tmp/strata-deepseek-e3-tcp-20261109/`; its `summary.json`, `first-response.json`
 and source/binary snapshots are the acceptance record.
 
-A following frozen HIP reference/TCP batch is active in
-`/var/tmp/strata-deepseek-e3-batch-control-20261109/`. It requires two distinct
-128-token prompts, normal EOS, native duplicate/incarnation tests, exact
-same-backend logits/tokens, fresh sessions and an explicit worker-loss probe.
-Its result is pending. Earlier sections below retain the preceding checkpoints.
-
-At 22:40 CET, that campaign's real native suffix passed identical-duplicate
-result retention, conflicting/late duplicate rejection and stale-incarnation
-rejection before native execution. The prefix is loading for the exact control;
-the planned fourth-request loss check has not run yet. A separate frozen
-mixed-host two-prompt/EOS/restart campaign is queued behind this control's
-successful acceptance, in
-`/var/tmp/strata-deepseek-e3-mixed-batch-20261109/`.
+A frozen mixed-host two-prompt/EOS/restart campaign began at 23:29 CET in
+`/var/tmp/strata-deepseek-e3-mixed-batch-20261109/`. Its result is pending.
+Fixed-budget allocation probes and the bidirectional tiered-worker format matrix
+are queued behind its successful acceptance. Earlier sections below retain the
+preceding checkpoints; separate frozen executables identify each campaign.
 
 ## Qwen: bounded tiered-worker milestone completed
 
