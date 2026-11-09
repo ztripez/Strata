@@ -43,6 +43,7 @@
 #include <atomic>
 #include <chrono>
 #include <climits>
+#include <charconv>
 #include <cmath>
 #include <condition_variable>
 #include <csignal>
@@ -121,6 +122,12 @@ void usage() {
                  "           (--ids I,J,... [--images FILE] [--n N] [--dump-logits FILE] | --serve\n"
                  "           | --encode-image FILE.rgb --size WxH --dump-image OUT\n"
                  "           | --pack-info)\n");
+#if defined(STRATA_NETWORK_EXPERTS)
+    std::fprintf(stderr,
+                 "           [--expert-worker IPv4:port --expert-worker-placement FILE --expert-worker-model FIRST_GGUF]\n"
+                 "           [--expert-worker-timeout-ms N (1..600000; default 5000)]\n"
+                 "           Network experts require --experts 6 --vision off --dspark none --prefill-chunk 0.\n");
+#endif
 }
 
 // stdin lines on a thread, so a request can see STOP while it decodes.  read(2), not std::cin - glibc's exit()
@@ -2548,6 +2555,21 @@ int main(int argc, char** argv) {
         else if (a == "--tp") o.tp = std::max(1, std::atoi(val("--tp").c_str()));
         else if (a == "--prefill-chunk") o.prefill_chunk = std::max(0, std::atoi(val("--prefill-chunk").c_str()));
         else if (a == "--threads") o.threads = val("--threads") != "off";
+#if defined(STRATA_NETWORK_EXPERTS)
+        else if (a == "--expert-worker") o.expert_worker = val("--expert-worker");
+        else if (a == "--expert-worker-placement") o.expert_worker_placement = val("--expert-worker-placement");
+        else if (a == "--expert-worker-model") o.expert_worker_model = val("--expert-worker-model");
+        else if (a == "--expert-worker-timeout-ms") {
+            const auto v = val("--expert-worker-timeout-ms");
+            int timeout = 0;
+            const auto parsed = std::from_chars(v.data(), v.data() + v.size(), timeout);
+            if (parsed.ec != std::errc() || parsed.ptr != v.data() + v.size() || timeout < 1 || timeout > 600000) {
+                std::fprintf(stderr, "--expert-worker-timeout-ms requires an integer in 1..600000\n");
+                return 2;
+            }
+            o.expert_worker_timeout_ms = timeout;
+        }
+#endif
         else if (a == "--vision") o.vision = val("--vision") != "off";
         else if (a == "--vision-resident") vision_resident = true;
         else if (a == "--vision-lazy") (void) (vision_lazy_asked = true);

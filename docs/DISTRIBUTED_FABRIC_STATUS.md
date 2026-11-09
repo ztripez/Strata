@@ -1,8 +1,8 @@
 # Distributed fabric checkpoint
 
-Updated 9 November 2026. Source branch `feat/distributed-experts`, HEAD
-`3c4f7ff8` before this status update. Continue the approved fabric architecture;
-Strata's existing node-local staging remains authoritative.
+Updated 9 November 2026. Source branch `feat/distributed-experts`. The stock
+smoke below used `3c4f7ff8`; later campaigns retain their own source snapshots
+and binary hashes. Strata's existing node-local staging remains authoritative.
 
 ## Qwen: bounded tiered-worker milestone completed
 
@@ -62,9 +62,9 @@ pack output, commands/settings, binary identities and raw HIP test results.
 
 G3 is partial: a stock HIP smoke exists, while the intended CUDA-primary stock
 baseline remains blocked and backend test limits remain explicit. G4 distributed
-DeepSeek inference is not qualified. A DeepSeek adapter using the existing
-kernels is present as an unvalidated working-tree draft; Qwen remains the last
-qualified worker family. No new cache or transport is required by that adapter.
+DeepSeek inference is not qualified. The DeepSeek adapter below has one bounded
+cross-vendor expert pass using the existing kernels. Full-model acceptance is
+separate. No new local cache or quantization implementation was added.
 
 ## E0/E1 implementation checkpoint
 
@@ -89,19 +89,59 @@ open; concurrent integrity hashing prevents performance conclusions here.
 The DeepSeek draft includes an effective six-expert identity receipt and a guard
 against any layer resolved to a different count before network READY. These are
 built but not yet live-qualified on a primary. Its expanded real
-fixture is prepared for four format-covering layers, six cases each, including
-sixteen rows and ninety-six assignments. Numerical acceptance is **NOT RUN**
-until its raw results are collected. The first launch was invalidated by a
+fixture covers all eight format pairs with six cases each, including sixteen
+rows and ninety-six assignments. Default-policy numerical acceptance failed as
+recorded below; the Q8_K forward campaign passed. The first launch was invalidated by a
 supervisor change that terminated the worker during hashing, before arithmetic.
 The retained retry separates each node's thirty-minute identity budget from the
 five-minute fixture budget; tolerances and inputs remain unchanged.
 
 Evidence and source snapshots:
 `/var/tmp/strata-deepseek-e1-20261109/`, with the active attempt in `retry1/`.
-The worker, real parity fixture and primary-network draft remain uncommitted
-pending numerical validation. E0's independent complete-artifact checks on
-Astor and the measured layer split remain incomplete. No E0/E1/E2 gate pass is
-claimed by this checkpoint.
+The worker and real parity fixture now have the bounded forward result below;
+the primary-network adapter has not run on a DeepSeek primary. E0's independent
+complete-artifact checks on Astor and the measured layer split remain incomplete.
+No complete E0/E1/E2 gate pass is claimed by this checkpoint.
+
+The first real E1 default-policy DeepSeek fixture failed its CPU comparison:
+GPU relative L2 `3.67e-8` passed, CPU maximum absolute error `0.0565` exceeded
+the frozen `0.002` limit. The exact mapping digest agreed on both nodes:
+`19ed8c0c20c5801bfba13d00788dae853d1120fd15c30a2bd916e2cfaa54dc6e`.
+The remaining numerical cases were not run after that failure. Expert v2 now
+negotiates the resolved activation arithmetic; the next campaign uses the stock
+`DS4_IQ_Q8K=1` path on both GPU processes. Thresholds and original input cases
+are retained. Metadata audit found eight format pairs, so four additional layers
+were appended before the new oracle started: 48 cases over 64 owned experts.
+The original four layers' seeded cases remain unchanged.
+
+With that existing Q8_K option, Astor's HIP/CPU oracle and Lucy's CUDA worker
+passed all 48 cases across all eight format pairs: 64 assigned experts, 960
+remote assignments and zero fallbacks. Worst GPU relative L2 was `0.000662`
+(limit `0.001`); worst CPU maximum absolute error was `0.000447` (limit `0.002`).
+Both cosine limits passed. Eight invalid local requests were refused, and an
+opposite arithmetic policy was rejected before READY. Both nodes reported the
+same exact mapping digest above; worker, oracle and driver exited 0.
+
+Evidence: `/var/tmp/strata-deepseek-e1-q8k-20261109/`, including raw logs,
+`forward-summary.json`, frozen source/binary hashes and the coverage correction.
+The reverse direction (HIP worker, CUDA/CPU oracle) is running. These are bounded
+expert results, not full-model output-quality, failure-recovery or speed passes.
+Every later Q8_K baseline and participant must use and report the same arithmetic.
+
+All seven pinned files passed full checksums on Lucy through an isolated,
+read-only NFSv3-over-SSH path. It uses pve01's reachable 10-Gb IPv6 bridge;
+the normal NFSv4.2 address still uses its 1-Gb bridge. Server interfaces,
+exports and existing mounts were not reconfigured. Temporary mounts, forwarding
+commands, byte-equivalence probe and pack-path relocation are recorded in
+`/var/tmp/strata-deepseek-e2-20261109/`. These are correctness-experiment paths,
+not an inference speed result. Astor's full seven-file check is still pending.
+
+The native E2 capture/replay probe builds for CUDA and HIP. It uses two `Model`
+instances and the authoritative local layers/head, serializes the audited state
+between them, and compares exact logits, token histories, carry counts and owned
+attention state. Its runtime pilot has not run. Both instances still load full
+dense weights; assigned-only loading and separate-process network execution
+remain E3 work. See [the probe contract](DEEPSEEK_LAYER_STATE.md#native-executor-probe).
 
 ## Other unfinished work
 

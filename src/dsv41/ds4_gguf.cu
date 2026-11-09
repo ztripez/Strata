@@ -1136,6 +1136,7 @@ bool mx_geometry(const char* who, int k, int n_embd, int n_ff) {
 }  // namespace
 
 // ---------------------------------------------------------------- entry points
+bool iq_q8k_activations() { return iq_q8k(); }
 bool prepare(cudaStream_t s) { return scratch(s) != nullptr; }
 
 int launch_errors() { return g_errors.load(std::memory_order_relaxed); }

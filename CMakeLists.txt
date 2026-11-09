@@ -1016,6 +1016,24 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     # strata_prefill: the RDNA3 WMMA dense GEMM (src/prefill/wmma_gemm.cu), which gemm() prefers over hipBLAS on gfx11 (measured
     # 4.97 -> 20-40 TFLOPS on this part: the chunked prompt's dense GEMM is 11.1 s of a 4K prompt at the library's rate)
     target_link_libraries(strata-dsv41 PRIVATE strata_prefill strata_dsv41_kernels ${_strata_gpu_runtime_target} ${_strata_gpu_blas_target})
+    if(STRATA_NETWORK_EXPERTS)
+      target_link_libraries(strata-dsv41 PRIVATE strata_network)
+      target_compile_definitions(strata-dsv41 PRIVATE STRATA_NETWORK_EXPERTS=1)
+      target_compile_definitions(strata-expert-worker PRIVATE STRATA_WORKER_DSV41=1)
+      target_include_directories(strata-expert-worker PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/dsv41
+                                 ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ggml)
+      target_sources(strata-expert-worker PRIVATE src/dsv41/ds4_gguf.cu src/dsv41/ds4_iq.cu src/dsv41/ds4_tq.cu)
+      target_link_libraries(strata-expert-worker PRIVATE strata_dsv41_kernels strata_prefill ${_strata_gpu_blas_target})
+      add_executable(deepseek_worker_parity_test tests/core/deepseek_worker_parity_test.cpp
+                     src/dsv41/ds4_gguf.cu src/dsv41/ds4_iq.cu src/dsv41/ds4_tq.cu
+                     src/dsv41/ds4_iq_cpu.cpp src/dsv41/ds4_tq_cpu.cpp src/dsv41/ds4_gg_cpu.cpp)
+      target_include_directories(deepseek_worker_parity_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
+                                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dsv41 ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ggml
+                                 ${_strata_gpu_include_directories})
+      target_compile_definitions(deepseek_worker_parity_test PRIVATE STRATA_DSV41_TQ_CPU=1)
+      target_link_libraries(deepseek_worker_parity_test PRIVATE strata_network strata_dsv41_kernels
+                            strata_kernels_cpu strata_prefill ${_strata_gpu_runtime_target} ${_strata_gpu_blas_target})
+    endif()
     find_package(Threads REQUIRED)
     target_link_libraries(strata-dsv41 PRIVATE Threads::Threads)
     if(WIN32 AND STRATA_ENABLE_HIP)   # cudaMemGetInfo is the DXGI-budgeted hip_compat::mem_get_info (src/core/device.cu): on a Strix Halo the
@@ -1040,6 +1058,18 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
                                  ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ggml)
       target_link_libraries(ds4_lane_bench PRIVATE strata_dsv41_kernels strata_kernels_cpu Threads::Threads)
       target_compile_definitions(ds4_lane_bench PRIVATE STRATA_DSV41_TQ_CPU=1)
+    endif()
+    if(STRATA_NETWORK_EXPERTS)
+      # Recompile the authoritative model sources for the E2 two-executor probe;
+      # inherit its complete build contract rather than maintaining another list.
+      get_target_property(_ds4_replay_sources strata-dsv41 SOURCES)
+      list(REMOVE_ITEM _ds4_replay_sources src/dsv41/ds4_main.cpp)
+      add_executable(deepseek_layer_replay_test EXCLUDE_FROM_ALL tests/dsv41/layer_replay_test.cpp ${_ds4_replay_sources})
+      target_include_directories(deepseek_layer_replay_test PRIVATE
+        "$<TARGET_PROPERTY:strata-dsv41,INCLUDE_DIRECTORIES>" ${CMAKE_CURRENT_SOURCE_DIR}/src/dsv41)
+      target_compile_definitions(deepseek_layer_replay_test PRIVATE "$<TARGET_PROPERTY:strata-dsv41,COMPILE_DEFINITIONS>")
+      target_compile_options(deepseek_layer_replay_test PRIVATE "$<TARGET_PROPERTY:strata-dsv41,COMPILE_OPTIONS>")
+      target_link_libraries(deepseek_layer_replay_test PRIVATE "$<TARGET_PROPERTY:strata-dsv41,LINK_LIBRARIES>")
     endif()
     # the GGUF kernels against a double-precision reference, the PCIe lane's streamed experts against the VRAM ones' bit for
     # bit (--lane), and the packed KV caches against the BF16 rows (needs a GPU, no model; built by name)

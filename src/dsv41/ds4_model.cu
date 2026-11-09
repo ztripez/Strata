@@ -19,6 +19,11 @@
 #include "ds4_pick_rule.hpp"
 #include "ds4_experts_rule.hpp"
 #include "ds4_engram_io.hpp"
+#if defined(STRATA_NETWORK_EXPERTS)
+#include "strata/core/network_experts.hpp"
+#include "strata/core/expert_worker_identity.hpp"
+#include "strata/core/deepseek_worker_geometry.hpp"
+#endif
 
 #include "ds4_gguf.cuh"
 #include "ds4_iq.cuh"
@@ -1051,6 +1056,73 @@ struct WinPlan {
 // ------------------------------------------------------------------ the model
 struct Model::Impl {
     Options o;
+#if defined(STRATA_NETWORK_EXPERTS)
+    std::unique_ptr<strata::core::NetworkExpertExecutor> net_worker;
+    std::shared_ptr<strata::GgufModel> net_model;
+    bool net_warned = false;
+    int probe_cut = -1;
+    uint64_t probe_sequence = 0, probe_last_session = 0;
+    bool probe_poisoned = false;
+    strata::core::DeepSeekBoundaryHeader probe_identity;
+    strata::core::DeepSeekBoundaryLayout probe_layout;
+    std::function<bool(const strata::core::DeepSeekLayerBoundary&, std::string&)> probe_observer;
+
+    bool setup_network(std::string &err) {
+        if (o.expert_worker.empty()) {
+            if (!o.expert_worker_placement.empty() || !o.expert_worker_model.empty()) {
+                err = "DeepSeek network model/placement requires --expert-worker"; return false;
+            }
+            return true;
+        }
+        if (devs.size() != 1 || o.seqs != 1 || o.vision || o.dspark || o.dspark_auto ||
+            o.experts != 6 || o.prefill_chunk != 0 || !pk.gguf || o.expert_worker_model.empty() ||
+            o.expert_worker_placement.empty() || o.expert_worker_timeout_ms < 1 || o.expert_worker_timeout_ms > 600000) {
+            err = "DeepSeek network v1 requires one GPU/session, --experts 6 --vision off --dspark none --prefill-chunk 0, a GGUF and placement";
+            return false;
+        }
+        try {
+            net_model = std::make_shared<strata::GgufModel>(strata::GgufModel::open(o.expert_worker_model));
+            const strata::core::DeepSeekWorkerGeometry ng(*net_model);
+            if (ng.layers != g.nl || ng.experts != g.n_exp || ng.hidden != g.dim || ng.intermediate != g.ff ||
+                std::abs(ng.limit - g.lim) > 1e-6) { err = "pack/network GGUF geometry or clamp differs"; return false; }
+            for (int li = 0; li < g.nl; ++li)
+                if (L[li].k_exp != 6) { err = "network layer effective routed-expert count is not six"; return false; }
+            // Bind the content hash to the expert views the primary actually uses.
+            const char *roles[3] = {"ffn_gate_exps.weight", "ffn_up_exps.weight", "ffn_down_exps.weight"};
+            for (int li = 0; li < g.nl; ++li) {
+                const auto &l = L[li];
+                if (l.nm != 1 || l.lay.fmt != gg::kFmtMXFP4) { err = "network requires unsplit native GGUF experts"; return false; }
+                for (int r = 0; r < 3; ++r) {
+                    size_t shard = 0;
+                    const auto *tensor = net_model->find("blk." + std::to_string(li) + "." + roles[r], &shard);
+                    if (!tensor || !net_model->in_bounds(*tensor, shard) || l.mx_file[r] < 0) { err = "missing or invalid network expert tensor"; return false; }
+                    const auto &file = net_model->shard(shard);
+                    const auto absolute = static_cast<uint64_t>(file.tensor_data(*tensor) - file.file_data());
+                    if (std::filesystem::canonical(file.path()) != std::filesystem::canonical(pk.model_dir + "/" + pk.files[l.mx_file[r]]) ||
+                        l.mx_off[r] != absolute ||
+                        l.mx_stride[r] * static_cast<uint64_t>(g.n_exp) != strata::tensor_payload_bytes(*tensor) ||
+                        gg::expert_type(l.lay, r) != static_cast<int>(tensor->type)) {
+                        err = "pack expert file/type/offset differs from network GGUF"; return false;
+                    }
+                }
+            }
+            std::vector<strata::core::ExpertWorkerPair> pairs;
+            if (!strata::core::load_expert_placement_plan(o.expert_worker_placement, g.nl, g.n_exp, pairs, &err)) return false;
+            net_worker = std::make_unique<strata::core::NetworkExpertExecutor>();
+            const auto sha = strata::core::expert_worker_model_sha256(*net_model);
+            const auto arithmetic = gg::iq_q8k_activations() ? strata::core::ExpertWorkerArithmetic::DEEPSEEK_IQ_Q8K
+                                                           : strata::core::ExpertWorkerArithmetic::DEEPSEEK_IQ_PER32;
+            std::fprintf(stderr, "ds4-network-identity: role=layer-owner effective_experts=6 engine=%s arithmetic=%u model_sha256=", STRATA_VERSION, static_cast<uint32_t>(arithmetic));
+            for (const auto b : sha) std::fprintf(stderr, "%02x", b);
+            std::fprintf(stderr, "\n");
+            if (!net_worker->connect_and_handshake(o.expert_worker, g.nl, g.nl, g.n_exp, g.dim, g.ff, g.k_exp,
+                    sha, o.expert_worker_timeout_ms, err, arithmetic) || !net_worker->install_plan(pairs, err)) return false;
+            std::fprintf(stderr, "ds4-network: acknowledged %zu experts; native token/window CPU misses only\n", pairs.size());
+            if (pairs.empty()) { net_worker->print_summary(); net_worker.reset(); }
+        } catch (const std::exception &e) { err = e.what(); return false; }
+        return true;
+    }
+#endif
     Pack pk;
     Geo g;
     std::vector<Dev> devs;
@@ -1905,6 +1977,9 @@ struct Model::Impl {
             }
         quit.store(true);
         if (service.joinable()) service.join();
+#if defined(STRATA_NETWORK_EXPERTS)
+        if (net_worker) net_worker->print_summary();
+#endif
         if (store_bg.joinable()) store_bg.join();   // (the store's background fill: it checks quit between its pieces)
         {
             std::lock_guard<std::mutex> lk(pf_mu);
@@ -3735,6 +3810,9 @@ struct Model::Impl {
             }
         }
         {
+#if defined(STRATA_NETWORK_EXPERTS)
+            if (!setup_network(err)) return false;
+#endif
             void* m = nullptr;
             if (cudaHostAlloc(&m, sizeof(Req) * kRing, cudaHostAllocMapped | cudaHostAllocPortable) != cudaSuccess) {
                 err = "host-mapped memory for the decode path's requests";
@@ -7114,6 +7192,12 @@ struct Model::Impl {
     }
 
     void reset() {
+#if defined(STRATA_NETWORK_EXPERTS)
+        probe_cut = -1;
+        probe_sequence = 0;
+        probe_poisoned = false;
+        probe_observer = {};
+#endif
         pos = 0;
         toks.clear();
         ctoks.clear();
@@ -9536,6 +9620,35 @@ struct Model::Impl {
                     if (T == 1) lane_take(l, ln_cls[(size_t) lc], picks, lt, next, r.ids);
                     else lane_take_win(l, ln_cls[(size_t) lc], picks, lt, next, r.ids, T);
                 }
+#if defined(STRATA_NETWORK_EXPERTS)
+                std::vector<float> network_sums;
+                std::vector<uint8_t> network_mask;
+                if (net_worker && !net_warned && net_worker->healthy() && !l.mtp && net_worker->holds_layer(li)) {
+                    std::vector<strata::core::ExpertWorkerAssignment> remote;
+                    std::vector<std::pair<int, int>> local;
+                    for (const auto pick : picks) {
+                        const int t = pick.second / kPicks, slot = pick.second % kPicks;
+                        if (net_worker->holds(li, pick.first))
+                            remote.push_back({static_cast<uint16_t>(t), static_cast<uint16_t>(slot), pick.first, r.w[t][slot]});
+                        else local.push_back(pick);
+                    }
+                    if (!remote.empty()) {
+                        std::vector<float> activation(static_cast<size_t>(T) * g.dim);
+                        for (int t = 0; t < T; ++t)
+                            std::copy(r.x[t], r.x[t] + g.dim, activation.data() + static_cast<size_t>(t) * g.dim);
+                        network_sums.resize(static_cast<size_t>(T) * g.dim);
+                        network_mask.resize(T);
+                        std::string error;
+                        if (net_worker->execute_sync(li, T, activation.data(), remote, network_sums.data(), network_mask.data(), &error))
+                            picks.swap(local);
+                        else {
+                            net_warned = true;
+                            network_mask.clear();
+                            std::fprintf(stderr, "ds4-network: layer %d failed (%s); recomputing on local CPU and disabling remote execution\n", li, error.c_str());
+                        }
+                    }
+                }
+#endif
                 std::sort(picks.begin(), picks.end());
                 for (size_t a = 0; a < picks.size();) {
                     Ent en;
@@ -9592,6 +9705,14 @@ struct Model::Impl {
                     st.cpu_ms += now_ms() - tc;
                     st.cpu_experts += nslots;
                 }
+#if defined(STRATA_NETWORK_EXPERTS)
+                for (size_t t = 0; t < network_mask.size(); ++t) {
+                    if (!network_mask[t]) continue;
+                    if (!rp.cpu[t]) std::fill(rp.part[t], rp.part[t] + g.dim, 0.0f);
+                    for (int c = 0; c < g.dim; ++c) rp.part[t][c] += network_sums[t * g.dim + c];
+                    rp.cpu[t] = 1;
+                }
+#endif
                 if (lc >= 0) lane_answer(ln_cls[(size_t) lc], lt);
             }
             std::atomic_thread_fence(std::memory_order_release);
@@ -13225,17 +13346,10 @@ struct Model::Impl {
         return true;
     }
 
-    // the window's plan, in window order (the indexer's and the candidate source's sizes carry from window to window)
-    // (wp.nrow > 0: a multi step's rows, row t at wp.rpos[t] - decoded tokens, never a picture's)
-    void plan_window(int64_t p0, int T, WinPlan& wp) {
-        wp.par = par;
-        // (a multi step's rows always on the async path, whatever their count: its verify windows reach 16 rows, and the
-        //  host-routed path's sums for them were not its own decode's; Project Maya #611)
-        wp.async = par || (!sync_decode && (T <= async_max_t || wp.nrow > 0));
-        wp.vl = 0;
-        for (int t = 0; t < T && !imgs.empty() && wp.nrow == 0; ++t)
-            if (in_image(p0 + t)) wp.vl |= 1u << t;
-        for (int il = 0; il < g.nl; ++il) {
+    // Canonical host index/candidate sizing. Supplying private carry arrays lets
+    // a boundary validator inspect a prefix without mutating live session state.
+    void plan_index_counts(int64_t p0, int T, WinPlan& wp, int* carry_topk, int* carry_cand, int end_layer) const {
+        for (int il = 0; il < end_layer; ++il) {
             const Layer& l = L[(size_t) il];
             if (l.ratio > 0) {
                 const int R = l.ratio;
@@ -13246,13 +13360,27 @@ struct Model::Impl {
                     clen_max = std::max(clen_max, n[t]);
                 }
                 if (l.ix_src) {
-                    for (int t = 0; t < T; ++t) wp.cand[il][t] = cur_cand_n[t];
+                    for (int t = 0; t < T; ++t) wp.cand[il][t] = carry_cand[t];
                     if (clen_max > 0 && l.cand_src)
-                        for (int t = 0; t < T; ++t) cur_cand_n[t] = std::min(g.cand_topk, (n[t] + g.cand_blk - 1) / g.cand_blk);
-                    for (int t = 0; t < T; ++t) cur_topk_n[t] = k[t];
+                        for (int t = 0; t < T; ++t) carry_cand[t] = std::min(g.cand_topk, (n[t] + g.cand_blk - 1) / g.cand_blk);
+                    for (int t = 0; t < T; ++t) carry_topk[t] = k[t];
                 }
-                for (int t = 0; t < T; ++t) wp.topk[il][t] = cur_topk_n[t];
+                for (int t = 0; t < T; ++t) wp.topk[il][t] = carry_topk[t];
             }
+        }
+    }
+    // the window's plan, in window order (the indexer's and the candidate source's sizes carry from window to window)
+    // (wp.nrow > 0: a multi step's rows, row t at wp.rpos[t] - decoded tokens, never a picture's)
+    void plan_window(int64_t p0, int T, WinPlan& wp) {
+        wp.par = par;
+        // (a multi step's rows always on the async path, whatever their count: its verify windows reach 16 rows, and the
+        //  host-routed path's sums for them were not its own decode's; Project Maya #611)
+        wp.async = par || (!sync_decode && (T <= async_max_t || wp.nrow > 0));
+        wp.vl = 0;
+        for (int t = 0; t < T && !imgs.empty() && wp.nrow == 0; ++t)
+            if (in_image(p0 + t)) wp.vl |= 1u << t;
+        plan_index_counts(p0,T,wp,cur_topk_n,cur_cand_n,g.nl);
+        for (int il = 0; il < g.nl; ++il) {
             if (wp.async) {
                 wp.seq[il] = ++seq_issued;
                 layer_of[wp.seq[il] % kRing].store(il, std::memory_order_release);
@@ -13357,6 +13485,17 @@ struct Model::Impl {
     }
 
     bool forward(const int* tk, int T, int logits_rows, std::string& err, int seed_rows = -1) {
+#if defined(STRATA_NETWORK_EXPERTS)
+        if (probe_cut >= 0 && (probe_poisoned || !probe_observer)) {
+            err = "boundary source unavailable; suffix executors require replay_boundary";
+            return false;
+        }
+        struct ProbeForwardGuard {
+            bool *poison;
+            bool complete = false;
+            ~ProbeForwardGuard() { if (poison && !complete) *poison = true; }
+        } probe_guard{probe_cut >= 0 ? &probe_poisoned : nullptr};
+#endif
 #if defined(STRATA_METAL)
         struct BusyAll {   // DS4_BUSY_ALL: the GPU is held busy for the whole step (the host gaps between its bursts too)
             bool on;
@@ -13419,6 +13558,9 @@ struct Model::Impl {
         st.tokens += T;
         cache_tick(T);
         if (seed_rows != 0 && !seed_drafter(p0, seed_rows < 0 ? T : seed_rows, 0, err)) return false;
+#if defined(STRATA_NETWORK_EXPERTS)
+        probe_guard.complete = true;
+#endif
         return true;
     }
 
@@ -13438,11 +13580,14 @@ struct Model::Impl {
         for (size_t i = 0; i < n; ++i) { const float v = hp[i]; if (!(v == v)) ++nf; else if (std::fabs(v) > mx) mx = std::fabs(v); }
         std::fprintf(stderr, "DBG hmax %s T=%d max=%.4g nonfinite=%zu h0=%g\n", tag, T, mx, nf, hp[0]);
     }
-    bool forward_serial(int64_t p0, int T, std::string& err) {
+#if defined(STRATA_NETWORK_EXPERTS)
+#include "ds4_boundary_adapter.inc"
+#endif
+    bool forward_serial(int64_t p0, int T, std::string& err, int first_layer = 0) {
         const int D = g.dim, H = g.hc;
-        int cur = L[0].dev;
+        int cur = L[(size_t) first_layer].dev;
         if (ds4_dbg("DS4_SYNC_WIN")) cudaDeviceSynchronize();
-        {
+        if (first_layer == 0) {
             Dev& d = devs[(size_t) cur];
             cudaSetDevice(d.id);
             CK(emb_upload(d.emb_rows, h_emb, (size_t) T * D * 2, d.st));
@@ -13459,7 +13604,11 @@ struct Model::Impl {
         }
         std::vector<float> dump;
         if (dump_h != nullptr) dump.resize((size_t) T * g.nl * H * D);
-        for (int il = 0; il < g.nl; ++il) {
+        for (int il = first_layer; il < g.nl; ++il) {
+#if defined(STRATA_NETWORK_EXPERTS)
+            if (first_layer > 0 && cancel && cancel()) { halted = true; err = "boundary replay cancelled"; return false; }
+            if (first_layer == 0 && probe_cut == il && !emit_boundary(p0, T, err)) return false;
+#endif
             Layer& l = L[(size_t) il];
             if (l.dev != cur) {
                 Dev& a = devs[(size_t) cur];
@@ -14955,6 +15104,20 @@ void Model::set_penalties(int last_n, float repeat, float freq, float present) {
     p_->pen_present = present;
 }
 bool Model::logits(std::vector<float>& out) { return p_->logits(out); }
+#if defined(STRATA_NETWORK_EXPERTS)
+bool Model::configure_boundary_probe(int cut, const core::DeepSeekBoundaryHeader& identity,
+    std::function<bool(const core::DeepSeekLayerBoundary&, std::string&)> observer, std::string& err) {
+    return p_->configure_boundary_probe(cut, identity, std::move(observer), err);
+}
+core::DeepSeekBoundaryLayout Model::boundary_layout() const {
+    if (p_->probe_cut < 0) throw std::logic_error("boundary probe is not configured");
+    return p_->probe_layout;
+}
+bool Model::replay_boundary(const core::DeepSeekLayerBoundary& boundary, int rows, std::string& err) {
+    return p_->replay_boundary(boundary, rows, err);
+}
+bool Model::boundary_state(std::vector<uint8_t>& out, std::string& err) { return p_->boundary_state(out, err); }
+#endif
 int Model::image_token() const { return p_->img_tok; }
 int Model::dim() const { return p_->g.dim; }
 bool Model::encode_image(const uint8_t* rgb, int width, int height, std::vector<uint16_t>& span, std::string& err) {

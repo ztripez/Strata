@@ -117,3 +117,64 @@ expert work.
 
 All five remain **NOT RUN** until backed by receipts. This document alone does
 not admit either candidate cut for network execution.
+
+## Native executor probe
+
+The opt-in `Model` probe and `ds4_boundary_adapter.inc` now connect this record
+to the existing `forward_serial()`, `layer()` and head paths. The adapter can
+resume a second `Model` instance at cut 20 or 24. It validates complete captures
+before mutation, refuses duplicates/stale sessions, and poisons a partially
+mutated session until reset with a new session ID. Index/candidate sizing reuses
+the same host planner as ordinary execution.
+
+`deepseek_layer_replay_test` builds for CUDA and HIP. It is not run by CTest,
+because it loads real weights and two full dense executors on one GPU. It uses
+six experts, synchronous windows, mapped CPU experts, no GPU expert residency
+and no RAM store, so both instances use the same deterministic local paths.
+Persistent-state comparison includes token histories, valid-count carry state,
+window rings, partial groups and valid source-cache rows. On mismatch it retains
+paired logits/state files in the reported temporary evidence directory.
+
+A bounded pilot is:
+
+```sh
+env DS4_IQ_Q8K=1 /path/to/deepseek_layer_replay_test /path/to/pack /path/to/first.gguf 1 20
+```
+
+The last arguments are decode steps and cut (`0` means both cuts). The full
+long-replay command uses `128 0`. Each run also checks malformed captures,
+duplicate delivery, pre-mutation cancellation, cancellation after a layer mutates
+state, reset and stale-session rejection. Both constructors currently load all
+dense layers; this probe cannot establish E3's assigned-only loading, process
+isolation, network transfer or capacity claims. Runtime replay acceptance remains
+**NOT RUN** until these commands have raw receipts.
+
+## Assigned-only loading audit for E3
+
+Reading `ds4_model.cu` identifies several allocation paths that a layer range
+must constrain. Skipping layers in `forward_serial()` alone does not save their
+memory. The E2 suffix instance deliberately still uses the complete loader.
+
+- Keep complete geometry and source-layer metadata, but restrict `load_dense()`
+  to owned layers. Its allocations include dense matrices, routers, window rings
+  and partial compressors. Load the output head only on the final range owner.
+- Restrict the dense-fit calculation and `place_experts()` budgets to those same
+  layers. `load_experts_mx()` must neither load nor warm unowned experts. Preserve
+  the existing native expert layout, CPU pool and store for owned layers.
+- Load the pinned embedding table only on the first range owner. Engram readers,
+  batches and table metadata are needed only where an owned layer uses them;
+  token history still follows the session contract on every owner.
+- Allocate compressed KV and index keys for locally produced or consumed
+  sources. At cut 24, the suffix needs a replica of source 20 without loading
+  source 20's dense weights or running its compressor. At cut 20, earlier source
+  caches are unnecessary on the suffix.
+- Audit reset, checkpoints, lookahead and destruction for unallocated layers.
+  Initially reject unsupported checkpoint, multi-sequence, chunk-pipeline,
+  DSpark and vision paths rather than allowing them to access absent buffers.
+
+Before admitting a range, retain per-layer allocation receipts and verify that
+an unowned layer has no dense, window or expert-arena allocation. Also retain
+the before/after device-memory readings, process RSS/PSS and backing-file I/O.
+Read-only mappings and metadata access are distinct from resident weight pages;
+report them separately. These are implementation and measurement requirements,
+not evidence that assigned-only loading already works.

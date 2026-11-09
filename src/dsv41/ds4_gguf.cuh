@@ -23,6 +23,9 @@
 namespace strata::ds4::gguf {
 
 namespace x3 = strata::dsv41k::exl3;
+/// Effective stock i-quant activation policy after DS4_IQ_Q8K is resolved once
+/// for this process. False uses per-32 rounding; true uses CPU-aligned Q8_K.
+bool iq_q8k_activations();
 
 constexpr int kFmtBF16 = 1;    // x3::Mat::fmt
 constexpr int kFmtMXFP4 = 2;   // x3::ExpertLayout::fmt (and an expert's matrix as an x3::Mat)

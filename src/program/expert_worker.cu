@@ -15,6 +15,10 @@
 #include "strata/kernels/native_mmvq.hpp"
 #include "strata/kernels/native_moe.hpp"
 #include "strata/kernels/cpu/pool.hpp"
+#if defined(STRATA_WORKER_DSV41)
+#include "strata/core/deepseek_worker_geometry.hpp"
+#include "ds4_gguf.cuh"
+#endif
 #include <set>
 #include <thread>
 
@@ -104,6 +108,9 @@ struct WorkerContext {
     int32_t total_layers = 0; // g.n_layers + (g.n_mtp_layers > 0 ? 1 : 0)
     uint64_t fingerprint = 0;
     std::array<uint8_t, 32> model_sha256{};
+    bool deepseek = false;
+    ExpertWorkerArithmetic arithmetic = ExpertWorkerArithmetic::NATIVE_V1;
+    float swiglu_limit = 0;
     cudaEvent_t timing[4]{};
     std::vector<WorkerLayerSource> layers;
 
@@ -238,16 +245,34 @@ bool init_worker_model(const std::string &model_path, int device, WorkerContext 
         return false;
     }
     const strata::GgufModel &gm = *ctx.gguf;
-    if (!geometry_from_gguf(gm.meta(), ctx.geom, ctx.top_k, err))
-        return false;
-    const auto &g = ctx.geom;
     const auto *arch = gm.meta().get("general.architecture");
-    if (!arch || arch->s != "qwen35moe" || ctx.top_k < 1 || ctx.top_k > kMaxTopK) {
+#if defined(STRATA_WORKER_DSV41)
+    if (arch && arch->s == "deepseek41") {
+        const DeepSeekWorkerGeometry geometry(gm);
+        ctx.deepseek = true;
+        ctx.arithmetic = strata::ds4::gguf::iq_q8k_activations() ? ExpertWorkerArithmetic::DEEPSEEK_IQ_Q8K
+                                                              : ExpertWorkerArithmetic::DEEPSEEK_IQ_PER32;
+        ctx.geom.n_layers = geometry.layers; ctx.geom.n_expert = geometry.experts;
+        ctx.geom.n_embd = geometry.hidden; ctx.geom.n_ff = geometry.intermediate;
+        ctx.top_k = geometry.picks; ctx.swiglu_limit = geometry.limit;
+        if (ctx.expert_vram_mib >= 0) { err = "DeepSeek worker first adapter requires GPU-resident placement"; return false; }
+    } else
+#endif
+    if (!geometry_from_gguf(gm.meta(), ctx.geom, ctx.top_k, err)) return false;
+    const auto &g = ctx.geom;
+    if (!arch || (!ctx.deepseek && arch->s != "qwen35moe") || ctx.top_k < 1 || ctx.top_k > kMaxTopK) {
         err = "network worker v1 requires qwen35moe with top-k in 1..16";
         return false;
     }
     ctx.total_layers = static_cast<int32_t>(g.n_layers);
+    if (ctx.deepseek)
+        std::fprintf(stderr, "ds4-network-startup: role=expert-worker effective_experts=%d; hashing exact GGUF mappings\n", ctx.top_k);
     ctx.model_sha256 = expert_worker_model_sha256(gm);
+    if (ctx.deepseek) {
+        std::fprintf(stderr, "ds4-network-identity: role=expert-worker effective_experts=%d engine=%s arithmetic=%u model_sha256=", ctx.top_k, STRATA_VERSION, static_cast<uint32_t>(ctx.arithmetic));
+        for (const auto b : ctx.model_sha256) std::fprintf(stderr, "%02x", b);
+        std::fprintf(stderr, "\n");
+    }
     ctx.fingerprint = compute_model_fingerprint(static_cast<uint32_t>(g.n_layers), static_cast<uint32_t>(g.n_expert),
                                                 static_cast<uint32_t>(g.n_embd), static_cast<uint32_t>(g.n_ff));
 
@@ -275,11 +300,24 @@ bool init_worker_model(const std::string &model_path, int device, WorkerContext 
             err = "ffn_gate_exps / ffn_up_exps type mismatch at layer " + std::to_string(l);
             return false;
         }
-        if (!K::native_expert_supported(static_cast<int>(tg->type), static_cast<int>(td->type), g.n_embd, g.n_ff)) {
+        if (!ctx.deepseek && !K::native_expert_supported(static_cast<int>(tg->type), static_cast<int>(td->type), g.n_embd, g.n_ff)) {
             err = "unsupported expert quantization types at layer " + std::to_string(l);
             return false;
         }
         WorkerLayerSource &wl = ctx.layers[static_cast<size_t>(l)];
+#if defined(STRATA_WORKER_DSV41)
+        if (ctx.deepseek) {
+            namespace G = strata::ds4::gguf;
+            if (!G::type_on_device(tg->type) || !G::type_on_device(td->type)) { err = "unsupported DeepSeek expert type"; return false; }
+            wl.layout.gu_type = tg->type; wl.layout.d_type = td->type;
+            wl.layout.n_embd = g.n_embd; wl.layout.n_ff = g.n_ff;
+            wl.layout.gu_row = G::type_row_bytes(tg->type, g.n_embd);
+            wl.layout.d_row = G::type_row_bytes(td->type, g.n_ff);
+            wl.layout.up_off = wl.layout.gu_row * g.n_ff;
+            wl.layout.down_off = 2 * wl.layout.up_off;
+            wl.layout.bytes = wl.layout.down_off + wl.layout.d_row * g.n_embd;
+        } else
+#endif
         wl.layout = K::native_expert_layout(static_cast<int>(tg->type), static_cast<int>(td->type), g.n_embd, g.n_ff);
         wl.src_gsz = static_cast<size_t>(g.n_ff) * wl.layout.gu_row;
         wl.src_dsz = static_cast<size_t>(g.n_embd) * wl.layout.d_row;
@@ -674,9 +712,77 @@ bool execute_gpu_request(WorkerContext &ctx, const ExpertWorkerExecuteFixed &ef,
     return true;
 }
 
+#if defined(STRATA_WORKER_DSV41)
+/// First DeepSeek adapter: run each assigned expert with the stock token kernels.
+/// Requests preserve original router order; no model weights traverse the wire.
+bool execute_deepseek_request(WorkerContext &ctx, const ExpertWorkerExecuteFixed &ef,
+                              const ExpertWorkerAssignment *assigns, const float *acts, ExpertWorkerResultFixed &rf,
+                              uint8_t *mask, float *sums, std::string &err) {
+    namespace G = strata::ds4::gguf;
+    const auto start = Clock::now();
+    const size_t N = ctx.geom.n_embd;
+    rf = {}; rf.layer = ef.layer; rf.n_tokens = ef.n_tokens; rf.n_embd = ef.n_embd;
+    if (ef.layer < 0 || ef.layer >= ctx.total_layers || ef.n_embd != N || !ef.n_tokens ||
+        ef.n_tokens > kMaxTokens || ef.n_assignments > ef.n_tokens * ctx.top_k) {
+        err = "invalid DeepSeek request geometry"; return false;
+    }
+    std::set<std::pair<uint16_t, uint16_t>> seen;
+    for (uint32_t i = 0; i < ef.n_assignments; ++i) {
+        const auto a = assigns[i];
+        if (a.token_idx >= ef.n_tokens || a.slot_idx >= ctx.top_k || a.expert_id < 0 ||
+            a.expert_id >= ctx.geom.n_expert || !std::isfinite(a.weight) ||
+            !seen.emplace(a.token_idx, a.slot_idx).second ||
+            ctx.slot_of[static_cast<size_t>(ef.layer) * ctx.geom.n_expert + a.expert_id] < 0) {
+            err = "invalid or unowned DeepSeek assignment"; return false;
+        }
+    }
+    std::fill(mask, mask + ef.n_tokens, 0);
+    std::fill(sums, sums + ef.n_tokens * N, 0.0f);
+    std::memcpy(ctx.h_x, acts, ef.n_tokens * N * sizeof(float));
+    if (!check_cuda(cudaMemcpyAsync(ctx.d_x, ctx.h_x, ef.n_tokens * N * sizeof(float), cudaMemcpyHostToDevice, ctx.stream), "DeepSeek activation upload", err)) return false;
+    const auto &layout = ctx.layers[ef.layer].layout;
+    strata::dsv41k::exl3::MoeArgs args;
+    args.k = 1; args.n_embd = static_cast<int>(N); args.n_ff = static_cast<int>(ctx.geom.n_ff);
+    args.limit = ctx.swiglu_limit; args.lay.fmt = G::kFmtMXFP4;
+    args.lay.K[0] = args.lay.K[1] = layout.gu_type; args.lay.K[2] = layout.d_type;
+    args.lay.trellis[0] = 0; args.lay.trellis[1] = layout.up_off; args.lay.trellis[2] = layout.down_off;
+    args.plan_ptr = ctx.d_meta->ptr; args.plan_w = ctx.d_meta->red_wt;
+    if (!G::prepare(ctx.stream)) { err = "DeepSeek GPU scratch initialization failed"; return false; }
+    const int errors_before = G::launch_errors();
+    for (uint32_t i = 0; i < ef.n_assignments; ++i) {
+        const auto a = assigns[i];
+        const int slot = ctx.slot_of[static_cast<size_t>(ef.layer) * ctx.geom.n_expert + a.expert_id];
+        ctx.h_meta->ptr[0] = reinterpret_cast<unsigned long long>(ctx.d_arena + ctx.slot_offset[slot]);
+        ctx.h_meta->red_wt[0] = 1.0f;
+        if (!check_cuda(cudaMemcpyAsync(ctx.d_meta, ctx.h_meta, sizeof(WorkerGroupMeta), cudaMemcpyHostToDevice, ctx.stream), "DeepSeek plan upload", err)) return false;
+        G::moe_gate_up(args, ctx.d_x + a.token_idx * N, static_cast<float *>(ctx.d_scratch), ctx.stream);
+        G::moe_down(args, static_cast<float *>(ctx.d_scratch), nullptr, ctx.d_sum, ctx.stream);
+        if (G::launch_errors() != errors_before) { err = "DeepSeek expert kernel refused execution"; return false; }
+        if (!check_cuda(cudaGetLastError(), "DeepSeek expert launch", err) ||
+            !check_cuda(cudaMemcpyAsync(ctx.h_sum, ctx.d_sum, N * sizeof(float), cudaMemcpyDeviceToHost, ctx.stream), "DeepSeek result copy", err)) return false;
+        cudaError_t status;
+        while ((status = cudaStreamQuery(ctx.stream)) == cudaErrorNotReady) {
+            if (us_since(start) > 30000000) { std::fprintf(stderr, "DeepSeek worker GPU deadline exceeded\n"); std::_Exit(1); }
+            std::this_thread::yield();
+        }
+        if (!check_cuda(status, "DeepSeek completion", err)) return false;
+        mask[a.token_idx] = 1;
+        for (size_t c = 0; c < N; ++c)
+            sums[a.token_idx * N + c] = std::fma(a.weight, ctx.h_sum[c], sums[a.token_idx * N + c]);
+    }
+    rf.n_assignments_executed = ef.n_assignments;
+    rf.total_us = us_since(start);
+    rf.kernel_us = rf.total_us; // first adapter: end-to-end service time, including transfers
+    return true;
+}
+#endif
+
 bool execute_worker_request(WorkerContext &ctx, const ExpertWorkerExecuteFixed &ef,
                             const ExpertWorkerAssignment *assigns, const float *acts, ExpertWorkerResultFixed &rf,
                             uint8_t *out_mask, float *out_sums, std::string &err) {
+#if defined(STRATA_WORKER_DSV41)
+    if (ctx.deepseek) return execute_deepseek_request(ctx, ef, assigns, acts, rf, out_mask, out_sums, err);
+#endif
     if (ctx.expert_vram_mib < 0) return execute_gpu_request(ctx, ef, assigns, acts, rf, out_mask, out_sums, err);
     const auto start = Clock::now();
     const size_t N = ctx.geom.n_embd;
@@ -744,6 +850,7 @@ bool execute_worker_request(WorkerContext &ctx, const ExpertWorkerExecuteFixed &
 
 bool serve_session(int cfd, WorkerContext &ctx, int timeout_ms, bool verbose) {
     std::string err;
+    const uint16_t version = ctx.deepseek ? kExpertWorkerArithmeticVersion : kExpertWorkerVersion;
     if (!expert_worker_set_socket_opts(cfd, timeout_ms, &err)) {
         std::fprintf(stderr, "strata-expert-worker: %s\n", err.c_str());
         return false;
@@ -754,11 +861,12 @@ bool serve_session(int cfd, WorkerContext &ctx, int timeout_ms, bool verbose) {
     ExpertWorkerFrameHeader hdr{};
     std::vector<uint8_t> payload;
     auto reject = [&](const char *why) {
-        expert_worker_send_error(cfd, hdr.request_id, ExpertWorkerErrorCode::MALFORMED_PACKET, why);
+        expert_worker_send_error(cfd, hdr.request_id, ExpertWorkerErrorCode::MALFORMED_PACKET, why, version);
         std::fprintf(stderr, "strata-expert-worker: rejected request: %s\n", why);
         return false;
     };
     while (expert_worker_recv_frame(cfd, hdr, payload, &err, timeout_ms)) {
+        if (hdr.version != version) return reject("protocol version differs from the model adapter");
         if (hdr.request_id <= last_id)
             return reject("request IDs must increase");
         last_id = hdr.request_id;
@@ -766,13 +874,20 @@ bool serve_session(int cfd, WorkerContext &ctx, int timeout_ms, bool verbose) {
         if (type == ExpertWorkerMsgType::PING) {
             if (!payload.empty())
                 return reject("PING must be empty");
-            if (!expert_worker_send_frame(cfd, ExpertWorkerMsgType::PONG, hdr.request_id, nullptr, 0, &err, timeout_ms))
+            if (!expert_worker_send_frame(cfd, ExpertWorkerMsgType::PONG, hdr.request_id, nullptr, 0, &err, timeout_ms, version))
                 return false;
             continue;
         }
         if (type == ExpertWorkerMsgType::HELLO) {
             ExpertWorkerHelloPayload hp{};
-            if (hello_ok || !expert_wire_decode(payload, hp))
+            uint32_t requested_arithmetic = 0;
+            bool decoded = false;
+            if (version == kExpertWorkerVersion) decoded = expert_wire_decode(payload,hp);
+            else {
+                ExpertWorkerHelloV2 v2{};
+                decoded = expert_wire_decode(payload,v2); hp = v2.model; requested_arithmetic = v2.arithmetic;
+            }
+            if (hello_ok || !decoded)
                 return reject("invalid or repeated HELLO");
             ExpertWorkerCapsPayload cp{};
             cp.model_fingerprint = ctx.fingerprint;
@@ -799,13 +914,17 @@ bool serve_session(int cfd, WorkerContext &ctx, int timeout_ms, bool verbose) {
             hello_ok = hp.model_sha256 == cp.model_sha256 && hp.model_fingerprint == cp.model_fingerprint &&
                        hp.n_embd == cp.n_embd && hp.n_ff == cp.n_ff && hp.n_layers == cp.n_layers &&
                        hp.n_experts == cp.n_experts && hp.top_k == cp.top_k && hp.dtype == 0 && hp.reserved == 0 &&
-                       hp.endianness == cp.endianness;
+                       hp.endianness == cp.endianness && requested_arithmetic == static_cast<uint32_t>(ctx.arithmetic);
             cp.status =
                 static_cast<uint32_t>(hello_ok ? ExpertWorkerErrorCode::OK : ExpertWorkerErrorCode::MODEL_MISMATCH);
-            if (!expert_worker_send_message(cfd, ExpertWorkerMsgType::CAPS, hdr.request_id, cp, &err, timeout_ms))
+            const bool sent = version == kExpertWorkerVersion
+                ? expert_worker_send_message(cfd, ExpertWorkerMsgType::CAPS, hdr.request_id, cp, &err, timeout_ms)
+                : expert_worker_send_message(cfd, ExpertWorkerMsgType::CAPS, hdr.request_id,
+                      ExpertWorkerCapsV2{cp,static_cast<uint32_t>(ctx.arithmetic)}, &err, timeout_ms, version);
+            if (!sent)
                 return false;
             if (!hello_ok) {
-                std::fprintf(stderr, "strata-expert-worker: model SHA-256 or geometry mismatch\n");
+                std::fprintf(stderr, "strata-expert-worker: model SHA-256, geometry or arithmetic mismatch\n");
                 return false;
             }
             continue;
@@ -833,7 +952,7 @@ bool serve_session(int cfd, WorkerContext &ctx, int timeout_ms, bool verbose) {
                 ctx.close_cache();
                 std::fprintf(stderr, "strata-expert-worker: plan failed: %s\n", err.c_str());
             }
-            if (!expert_worker_send_message(cfd, ExpertWorkerMsgType::READY, hdr.request_id, ready, &err, timeout_ms))
+            if (!expert_worker_send_message(cfd, ExpertWorkerMsgType::READY, hdr.request_id, ready, &err, timeout_ms, version))
                 return false;
             if (!installed)
                 return false;
@@ -871,7 +990,7 @@ bool serve_session(int cfd, WorkerContext &ctx, int timeout_ms, bool verbose) {
         ExpertWorkerResultFixed rf{};
         if (!execute_worker_request(ctx, ef, assigns.data(), acts.data(), rf, mask.data(), sums.data(), err)) {
             std::fprintf(stderr, "strata-expert-worker: GPU execution failed: %s\n", err.c_str());
-            expert_worker_send_error(cfd, hdr.request_id, ExpertWorkerErrorCode::KERNEL_FAILURE, err);
+            expert_worker_send_error(cfd, hdr.request_id, ExpertWorkerErrorCode::KERNEL_FAILURE, err, version);
             std::_Exit(1); // Do not reuse a possibly poisoned GPU context.
         }
         ExpertWireWriter w;
@@ -881,7 +1000,7 @@ bool serve_session(int cfd, WorkerContext &ctx, int timeout_ms, bool verbose) {
         for (auto v : sums)
             w.put(v);
         if (!expert_worker_send_frame(cfd, ExpertWorkerMsgType::RESULT, hdr.request_id, w.bytes.data(),
-                                      static_cast<uint32_t>(w.bytes.size()), &err, timeout_ms))
+                                      static_cast<uint32_t>(w.bytes.size()), &err, timeout_ms, version))
             return false;
     }
     if (ctx.expert_vram_mib >= 0)

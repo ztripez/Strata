@@ -20,6 +20,9 @@
 #include <memory>
 #include <string>
 #include <vector>
+#if defined(STRATA_NETWORK_EXPERTS)
+#include "strata/core/deepseek_layer_boundary.hpp"
+#endif
 
 namespace strata::ds4 {
 
@@ -71,6 +74,11 @@ struct Options {
     // for a picture turn only, out of what --reserve-mib keeps free (it stays on the card when the reserve is too small for it)
     bool vision_lazy = false;
     bool verbose = false;
+#if defined(STRATA_NETWORK_EXPERTS)
+    /// Opt-in single-primary text-window adapter; the GGUF must match the pack's expert views.
+    std::string expert_worker, expert_worker_placement, expert_worker_model;
+    int expert_worker_timeout_ms = 5000;
+#endif
     // --parallel: conversations held at once (1-8), each its own state - its position, tokens, checkpoints, window rings,
     // the compressors' partial groups, the compressed KV and the index keys (a full context's each); 1: as before
     int seqs = 1;
@@ -151,6 +159,28 @@ public:
     void set_penalties(int last_n, float repeat, float freq, float present);
     /// The last feed's logit rows on the host (rows x vocab floats).
     bool logits(std::vector<float>& out);
+#if defined(STRATA_NETWORK_EXPERTS)
+    /// Configure an E2 boundary probe on a freshly reset, deterministic window
+    /// executor. The caller supplies identities from its verified manifest.
+    /// A nonempty observer receives the cut state during ordinary feed(); an
+    /// empty observer configures a suffix executor accepting replay_boundary().
+    /// This probe requires one GPU, DS4_SYNC=1, six experts and disabled caches,
+    /// DSpark, vision and chunk prefill. Session IDs must increase for this
+    /// executor; reset invalidates the probe session.
+    bool configure_boundary_probe(int cut, const core::DeepSeekBoundaryHeader& identity,
+        std::function<bool(const core::DeepSeekLayerBoundary&, std::string&)> observer, std::string& err);
+    /// The configured cut's layout, including only the source-cache updates that
+    /// cross it. Valid after configure_boundary_probe() succeeds.
+    core::DeepSeekBoundaryLayout boundary_layout() const;
+    /// Resume the existing local layer executor from a completely validated E2
+    /// capture. Duplicate/stale/out-of-order captures are refused before mutation.
+    /// A failure after mutation poisons this session until reset/reconfiguration.
+    bool replay_boundary(const core::DeepSeekLayerBoundary& boundary, int logits_rows, std::string& err);
+    /// Diagnostic bytes of the suffix's persistent rings/compressors and valid
+    /// shared-source rows, for exact comparison with an uninterrupted executor.
+    /// This is an E2 oracle view, not a portable checkpoint or network message.
+    bool boundary_state(std::vector<uint8_t>& out, std::string& err);
+#endif
 
     /// The DSpark drafter (speculative decoding): its block size (0: not loaded), drafts for the positions after `y`
     /// (y: the token at pos(), not fed yet) with their confidences, and the verification of [y, drafts]: how many of the
