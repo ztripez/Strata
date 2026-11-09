@@ -386,3 +386,16 @@ backend passed. Live fixed-budget loading/refusal, the same-token three-tier
 fixture and combined hybrid arithmetic have NOT RUN. Receipts are in
 `/var/tmp/strata-deepseek-local-gpu-budget-20261109/`. No E4, E5, capacity or
 performance pass is asserted by these build/admission checks.
+
+## DeepSeek expert-worker tier preparation
+
+The DeepSeek worker now connects the existing bounded GPU/RAM/mapped placement
+to its native CPU row functions and CPU pool. CUDA/HIP worker and fixture builds
+passed. The actual CPU dispatch helper passed eight exact serial/threaded and
+separate/packed-view comparisons plus twenty-eight nonmutating refusals on both
+hosts. ASan/UBSan passed on Lucy, with prebuilt backend libraries unsanitized.
+
+Live tiered RPC, all-eight-format arithmetic, worker fallback and combined hybrid
+inference remain NOT RUN to acceptance. The new opt-in fixture uses fresh
+connections for each immutable layer plan; its seeded cases and tolerances stay
+unchanged. See [the tier contract and commands](DEEPSEEK_EXPERT_TIERS.md).

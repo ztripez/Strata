@@ -18,6 +18,7 @@
 #if defined(STRATA_WORKER_DSV41)
 #include "strata/core/deepseek_worker_geometry.hpp"
 #include "ds4_gguf.cuh"
+#include "ds4_worker_cpu.hpp"
 #endif
 #include <set>
 #include <thread>
@@ -97,6 +98,9 @@ struct WorkerLayerSource {
     size_t src_gsz = 0;
     size_t src_dsz = 0;
     size_t slot_stride = 0;
+#if defined(STRATA_WORKER_DSV41)
+    strata::ds4::gguf::IqCpu deepseek_cpu{};
+#endif
 };
 
 struct WorkerContext {
@@ -128,6 +132,9 @@ struct WorkerContext {
     std::vector<uint8_t> host_arena;
     std::vector<const uint8_t *> host_blob_of;
     std::unique_ptr<K::cpu::ExpertPool> cpu_pool;
+#if defined(STRATA_WORKER_DSV41)
+    std::unique_ptr<strata::ds4::Pool> deepseek_cpu_pool;
+#endif
     uint64_t gpu_assignments = 0, ram_assignments = 0, mapped_assignments = 0;
 
     // Execution buffers on device
@@ -255,7 +262,10 @@ bool init_worker_model(const std::string &model_path, int device, WorkerContext 
         ctx.geom.n_layers = geometry.layers; ctx.geom.n_expert = geometry.experts;
         ctx.geom.n_embd = geometry.hidden; ctx.geom.n_ff = geometry.intermediate;
         ctx.top_k = geometry.picks; ctx.swiglu_limit = geometry.limit;
-        if (ctx.expert_vram_mib >= 0) { err = "DeepSeek worker first adapter requires GPU-resident placement"; return false; }
+        if (ctx.expert_vram_mib >= 0 && ctx.arithmetic != ExpertWorkerArithmetic::DEEPSEEK_IQ_Q8K) {
+            err = "DeepSeek tiered worker requires qualified DS4_IQ_Q8K=1 arithmetic";
+            return false;
+        }
     } else
 #endif
     if (!geometry_from_gguf(gm.meta(), ctx.geom, ctx.top_k, err)) return false;
@@ -316,6 +326,8 @@ bool init_worker_model(const std::string &model_path, int device, WorkerContext 
             wl.layout.up_off = wl.layout.gu_row * g.n_ff;
             wl.layout.down_off = 2 * wl.layout.up_off;
             wl.layout.bytes = wl.layout.down_off + wl.layout.d_row * g.n_embd;
+            if (ctx.expert_vram_mib >= 0 && !G::iq_cpu_fmt(tg->type, td->type, g.n_embd, g.n_ff, wl.deepseek_cpu, err))
+                return false;
         } else
 #endif
         wl.layout = K::native_expert_layout(static_cast<int>(tg->type), static_cast<int>(td->type), g.n_embd, g.n_ff);
@@ -492,13 +504,22 @@ bool install_worker_plan(WorkerContext &ctx, const ExpertWorkerPair *pairs, uint
             return false;
         }
         const auto &wl = ctx.layers[p.layer];
-        K::cpu::NativeFmt fmt;
-        if (!K::cpu::native_fmt(wl.layout.gu_type, wl.layout.d_type, ctx.geom.n_embd, ctx.geom.n_ff, fmt, err))
-            return false;
-        if (fmt.bytes != wl.layout.bytes || fmt.up_off != wl.layout.up_off || fmt.down_off != wl.layout.down_off ||
-            fmt.act_bytes > K::cpu::kNativeActBytes || fmt.h_bytes > K::cpu::kNativeHBytes) {
-            err = "worker CPU/GPU expert layouts differ";
-            return false;
+#if defined(STRATA_WORKER_DSV41)
+        if (ctx.deepseek) {
+            if (wl.deepseek_cpu.gu_row != wl.layout.gu_row || wl.deepseek_cpu.d_row != wl.layout.d_row) {
+                err = "DeepSeek worker CPU/GPU row layouts differ";return false;
+            }
+        } else
+#endif
+        {
+            K::cpu::NativeFmt fmt;
+            if (!K::cpu::native_fmt(wl.layout.gu_type, wl.layout.d_type, ctx.geom.n_embd, ctx.geom.n_ff, fmt, err))
+                return false;
+            if (fmt.bytes != wl.layout.bytes || fmt.up_off != wl.layout.up_off || fmt.down_off != wl.layout.down_off ||
+                fmt.act_bytes > K::cpu::kNativeActBytes || fmt.h_bytes > K::cpu::kNativeHBytes) {
+                err = "worker CPU/GPU expert layouts differ";
+                return false;
+            }
         }
         if (wl.slot_stride <= gpu_budget - gpu_bytes) {
             gpu.push_back(p);
@@ -525,7 +546,16 @@ bool install_worker_plan(WorkerContext &ctx, const ExpertWorkerPair *pairs, uint
             ++host_experts;
         }
     }
-    if (!cpu.empty() && !ctx.cpu_pool) ctx.cpu_pool = std::make_unique<K::cpu::ExpertPool>(0, false);
+    if (!cpu.empty()) {
+#if defined(STRATA_WORKER_DSV41)
+        if (ctx.deepseek) {
+            // Same native pool as the layer owner; one worker plus its caller
+            // bounds this first tiered profile to two CPU threads.
+            if (!ctx.deepseek_cpu_pool) ctx.deepseek_cpu_pool = std::make_unique<strata::ds4::Pool>(1);
+        } else
+#endif
+        if (!ctx.cpu_pool) ctx.cpu_pool = std::make_unique<K::cpu::ExpertPool>(0, false);
+    }
     ctx.loaded_count = n_pairs;
     ready.loaded_count = n_pairs; // acknowledge logical ownership, including mapped experts
     ready.load_time_us = us_since(start);
@@ -713,7 +743,7 @@ bool execute_gpu_request(WorkerContext &ctx, const ExpertWorkerExecuteFixed &ef,
 }
 
 #if defined(STRATA_WORKER_DSV41)
-/// First DeepSeek adapter: run each assigned expert with the stock token kernels.
+/// Run assigned DeepSeek experts through the stock GPU or CPU row functions.
 /// Requests preserve original router order; no model weights traverse the wire.
 bool execute_deepseek_request(WorkerContext &ctx, const ExpertWorkerExecuteFixed &ef,
                               const ExpertWorkerAssignment *assigns, const float *acts, ExpertWorkerResultFixed &rf,
@@ -727,52 +757,83 @@ bool execute_deepseek_request(WorkerContext &ctx, const ExpertWorkerExecuteFixed
         err = "invalid DeepSeek request geometry"; return false;
     }
     std::set<std::pair<uint16_t, uint16_t>> seen;
+    bool has_gpu=false,has_cpu=false;
     for (uint32_t i = 0; i < ef.n_assignments; ++i) {
         const auto a = assigns[i];
         if (a.token_idx >= ef.n_tokens || a.slot_idx >= ctx.top_k || a.expert_id < 0 ||
             a.expert_id >= ctx.geom.n_expert || !std::isfinite(a.weight) ||
             !seen.emplace(a.token_idx, a.slot_idx).second ||
-            ctx.slot_of[static_cast<size_t>(ef.layer) * ctx.geom.n_expert + a.expert_id] < 0) {
+            ctx.slot_of[static_cast<size_t>(ef.layer) * ctx.geom.n_expert + a.expert_id] == -1) {
             err = "invalid or unowned DeepSeek assignment"; return false;
         }
+        if (ctx.slot_of[static_cast<size_t>(ef.layer) * ctx.geom.n_expert + a.expert_id] >= 0) has_gpu=true;
+        else has_cpu=true;
     }
     std::fill(mask, mask + ef.n_tokens, 0);
     std::fill(sums, sums + ef.n_tokens * N, 0.0f);
-    std::memcpy(ctx.h_x, acts, ef.n_tokens * N * sizeof(float));
-    if (!check_cuda(cudaMemcpyAsync(ctx.d_x, ctx.h_x, ef.n_tokens * N * sizeof(float), cudaMemcpyHostToDevice, ctx.stream), "DeepSeek activation upload", err)) return false;
-    const auto &layout = ctx.layers[ef.layer].layout;
+    if (has_gpu) {
+        std::memcpy(ctx.h_x, acts, ef.n_tokens * N * sizeof(float));
+        if (!check_cuda(cudaMemcpyAsync(ctx.d_x, ctx.h_x, ef.n_tokens * N * sizeof(float), cudaMemcpyHostToDevice, ctx.stream), "DeepSeek activation upload", err)) return false;
+    }
+    const auto &source=ctx.layers[ef.layer];const auto &layout=source.layout;
+    const auto &cpu=source.deepseek_cpu;
+    std::vector<uint8_t> quant,hidden_quant;
+    std::vector<float> hidden;
+    if (has_cpu) {
+        if (!ctx.deepseek_cpu_pool || ctx.arithmetic != ExpertWorkerArithmetic::DEEPSEEK_IQ_Q8K) {
+            err="DeepSeek CPU expert execution lacks its qualified native tier setup";return false;
+        }
+        quant.resize(static_cast<size_t>(ef.n_tokens)*cpu.act_bytes);
+        hidden_quant.resize(cpu.h_bytes);hidden.resize(static_cast<size_t>(ctx.geom.n_ff));
+        for (uint32_t t=0;t<ef.n_tokens;++t)
+            G::iq_cpu_quant(cpu.gu_act,acts+static_cast<size_t>(t)*N,static_cast<int>(N),quant.data()+static_cast<size_t>(t)*cpu.act_bytes);
+    }
     strata::dsv41k::exl3::MoeArgs args;
     args.k = 1; args.n_embd = static_cast<int>(N); args.n_ff = static_cast<int>(ctx.geom.n_ff);
     args.limit = ctx.swiglu_limit; args.lay.fmt = G::kFmtMXFP4;
     args.lay.K[0] = args.lay.K[1] = layout.gu_type; args.lay.K[2] = layout.d_type;
     args.lay.trellis[0] = 0; args.lay.trellis[1] = layout.up_off; args.lay.trellis[2] = layout.down_off;
     args.plan_ptr = ctx.d_meta->ptr; args.plan_w = ctx.d_meta->red_wt;
-    if (!G::prepare(ctx.stream)) { err = "DeepSeek GPU scratch initialization failed"; return false; }
+    if (has_gpu && !G::prepare(ctx.stream)) { err = "DeepSeek GPU scratch initialization failed"; return false; }
     const int errors_before = G::launch_errors();
     for (uint32_t i = 0; i < ef.n_assignments; ++i) {
         const auto a = assigns[i];
         const int slot = ctx.slot_of[static_cast<size_t>(ef.layer) * ctx.geom.n_expert + a.expert_id];
-        ctx.h_meta->ptr[0] = reinterpret_cast<unsigned long long>(ctx.d_arena + ctx.slot_offset[slot]);
-        ctx.h_meta->red_wt[0] = 1.0f;
-        if (!check_cuda(cudaMemcpyAsync(ctx.d_meta, ctx.h_meta, sizeof(WorkerGroupMeta), cudaMemcpyHostToDevice, ctx.stream), "DeepSeek plan upload", err)) return false;
-        G::moe_gate_up(args, ctx.d_x + a.token_idx * N, static_cast<float *>(ctx.d_scratch), ctx.stream);
-        G::moe_down(args, static_cast<float *>(ctx.d_scratch), nullptr, ctx.d_sum, ctx.stream);
-        if (G::launch_errors() != errors_before) { err = "DeepSeek expert kernel refused execution"; return false; }
-        if (!check_cuda(cudaGetLastError(), "DeepSeek expert launch", err) ||
-            !check_cuda(cudaMemcpyAsync(ctx.h_sum, ctx.d_sum, N * sizeof(float), cudaMemcpyDeviceToHost, ctx.stream), "DeepSeek result copy", err)) return false;
-        cudaError_t status;
-        while ((status = cudaStreamQuery(ctx.stream)) == cudaErrorNotReady) {
-            if (us_since(start) > 30000000) { std::fprintf(stderr, "DeepSeek worker GPU deadline exceeded\n"); std::_Exit(1); }
-            std::this_thread::yield();
+        if (us_since(start)>30000000) {std::fprintf(stderr,"DeepSeek worker service deadline exceeded\n");std::_Exit(1);}
+        if (slot<0) {
+            const size_t index=static_cast<size_t>(ef.layer)*ctx.geom.n_expert+a.expert_id;
+            const auto *packed=ctx.host_blob_of[index];
+            const auto *gate=packed ? packed:source.src_g+static_cast<size_t>(a.expert_id)*source.src_gsz;
+            const auto *up=packed ? packed+layout.up_off:source.src_u+static_cast<size_t>(a.expert_id)*source.src_gsz;
+            const auto *down=packed ? packed+layout.down_off:source.src_d+static_cast<size_t>(a.expert_id)*source.src_dsz;
+            const std::span<const uint8_t> activation(quant.data()+static_cast<size_t>(a.token_idx)*cpu.act_bytes,cpu.act_bytes);
+            if (!strata::ds4::worker::execute_cpu_rows(cpu,*ctx.deepseek_cpu_pool,{gate,up,down},activation,
+                    hidden,hidden_quant,std::span<float>(ctx.h_sum,N),ctx.swiglu_limit,err)) return false;
+            if (packed) ++ctx.ram_assignments;else ++ctx.mapped_assignments;
+        } else {
+            ctx.h_meta->ptr[0] = reinterpret_cast<unsigned long long>(ctx.d_arena + ctx.slot_offset[slot]);
+            ctx.h_meta->red_wt[0] = 1.0f;
+            if (!check_cuda(cudaMemcpyAsync(ctx.d_meta, ctx.h_meta, sizeof(WorkerGroupMeta), cudaMemcpyHostToDevice, ctx.stream), "DeepSeek plan upload", err)) return false;
+            G::moe_gate_up(args, ctx.d_x + a.token_idx * N, static_cast<float *>(ctx.d_scratch), ctx.stream);
+            G::moe_down(args, static_cast<float *>(ctx.d_scratch), nullptr, ctx.d_sum, ctx.stream);
+            if (G::launch_errors() != errors_before) { err = "DeepSeek expert kernel refused execution"; return false; }
+            if (!check_cuda(cudaGetLastError(), "DeepSeek expert launch", err) ||
+                !check_cuda(cudaMemcpyAsync(ctx.h_sum, ctx.d_sum, N * sizeof(float), cudaMemcpyDeviceToHost, ctx.stream), "DeepSeek result copy", err)) return false;
+            cudaError_t status;
+            while ((status = cudaStreamQuery(ctx.stream)) == cudaErrorNotReady) {
+                if (us_since(start) > 30000000) { std::fprintf(stderr, "DeepSeek worker GPU deadline exceeded\n"); std::_Exit(1); }
+                std::this_thread::yield();
+            }
+            if (!check_cuda(status, "DeepSeek completion", err)) return false;
+            ++ctx.gpu_assignments;
         }
-        if (!check_cuda(status, "DeepSeek completion", err)) return false;
         mask[a.token_idx] = 1;
         for (size_t c = 0; c < N; ++c)
             sums[a.token_idx * N + c] = std::fma(a.weight, ctx.h_sum[c], sums[a.token_idx * N + c]);
     }
     rf.n_assignments_executed = ef.n_assignments;
     rf.total_us = us_since(start);
-    rf.kernel_us = rf.total_us; // first adapter: end-to-end service time, including transfers
+    rf.kernel_us = rf.total_us; // end-to-end service time, including transfers/CPU rows; not pure GPU time
     return true;
 }
 #endif
@@ -988,11 +1049,16 @@ bool serve_session(int cfd, WorkerContext &ctx, int timeout_ms, bool verbose) {
                 return reject("nonfinite activation");
         }
         ExpertWorkerResultFixed rf{};
+        const auto gpu_before=ctx.gpu_assignments,ram_before=ctx.ram_assignments,mapped_before=ctx.mapped_assignments;
         if (!execute_worker_request(ctx, ef, assigns.data(), acts.data(), rf, mask.data(), sums.data(), err)) {
-            std::fprintf(stderr, "strata-expert-worker: GPU execution failed: %s\n", err.c_str());
+            std::fprintf(stderr, "strata-expert-worker: expert execution failed: %s\n", err.c_str());
             expert_worker_send_error(cfd, hdr.request_id, ExpertWorkerErrorCode::KERNEL_FAILURE, err, version);
-            std::_Exit(1); // Do not reuse a possibly poisoned GPU context.
+            std::_Exit(1); // Do not reuse a possibly poisoned expert context.
         }
+        if (verbose && ctx.deepseek && ctx.expert_vram_mib>=0)
+            std::fprintf(stderr,"strata-worker-tier-request: layer=%d tokens=%u assignments=%u gpu=%llu ram=%llu mapped=%llu\n",
+                ef.layer,ef.n_tokens,rf.n_assignments_executed,static_cast<unsigned long long>(ctx.gpu_assignments-gpu_before),
+                static_cast<unsigned long long>(ctx.ram_assignments-ram_before),static_cast<unsigned long long>(ctx.mapped_assignments-mapped_before));
         ExpertWireWriter w;
         w.put(rf);
         for (auto v : mask)

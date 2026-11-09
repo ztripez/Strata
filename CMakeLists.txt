@@ -1029,10 +1029,11 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     if(STRATA_NETWORK_EXPERTS)
       target_link_libraries(strata-dsv41 PRIVATE strata_network)
       target_compile_definitions(strata-dsv41 PRIVATE STRATA_NETWORK_EXPERTS=1)
-      target_compile_definitions(strata-expert-worker PRIVATE STRATA_WORKER_DSV41=1)
+      target_compile_definitions(strata-expert-worker PRIVATE STRATA_WORKER_DSV41=1 STRATA_DSV41_TQ_CPU=1)
       target_include_directories(strata-expert-worker PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/dsv41
                                  ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ggml)
-      target_sources(strata-expert-worker PRIVATE src/dsv41/ds4_gguf.cu src/dsv41/ds4_iq.cu src/dsv41/ds4_tq.cu)
+      target_sources(strata-expert-worker PRIVATE src/dsv41/ds4_gguf.cu src/dsv41/ds4_iq.cu src/dsv41/ds4_tq.cu
+                     src/dsv41/ds4_iq_cpu.cpp src/dsv41/ds4_tq_cpu.cpp src/dsv41/ds4_gg_cpu.cpp)
       target_link_libraries(strata-expert-worker PRIVATE strata_dsv41_kernels strata_prefill ${_strata_gpu_blas_target})
       add_executable(deepseek_worker_parity_test tests/core/deepseek_worker_parity_test.cpp
                      src/dsv41/ds4_gguf.cu src/dsv41/ds4_iq.cu src/dsv41/ds4_tq.cu
@@ -1043,6 +1044,13 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
       target_compile_definitions(deepseek_worker_parity_test PRIVATE STRATA_DSV41_TQ_CPU=1)
       target_link_libraries(deepseek_worker_parity_test PRIVATE strata_network strata_dsv41_kernels
                             strata_kernels_cpu strata_prefill ${_strata_gpu_runtime_target} ${_strata_gpu_blas_target})
+      # Native CPU row-dispatch control, with synthetic weights and no GPU/model load.
+      add_executable(deepseek_worker_cpu_test EXCLUDE_FROM_ALL tests/core/deepseek_worker_cpu_test.cpp
+                     src/dsv41/ds4_iq_cpu.cpp src/dsv41/ds4_tq_cpu.cpp src/dsv41/ds4_gg_cpu.cpp)
+      target_include_directories(deepseek_worker_cpu_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/dsv41
+                                 ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ggml)
+      target_compile_definitions(deepseek_worker_cpu_test PRIVATE STRATA_DSV41_TQ_CPU=1)
+      target_link_libraries(deepseek_worker_cpu_test PRIVATE strata_kernels_cpu Threads::Threads)
     endif()
     find_package(Threads REQUIRED)
     target_link_libraries(strata-dsv41 PRIVATE Threads::Threads)

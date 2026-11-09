@@ -44,7 +44,8 @@ bool close(const std::vector<float> &ref, const std::vector<float> &got, bool cp
 }
 
 int main(int argc, char **argv) {
-    if (argc != 3) { std::fprintf(stderr, "usage: deepseek_worker_parity_test FIRST_GGUF IPv4:port\n"); return 2; }
+    const bool per_layer=argc==4 && std::strcmp(argv[3],"--per-layer-plan")==0;
+    if (argc != 3 && !per_layer) { std::fprintf(stderr, "usage: deepseek_worker_parity_test FIRST_GGUF IPv4:port [--per-layer-plan]\n"); return 2; }
     try {
         auto model = strata::GgufModel::open(argv[1]);
         DeepSeekWorkerGeometry g(model);
@@ -84,7 +85,8 @@ int main(int argc, char **argv) {
         if (required!=covered) throw std::runtime_error("fixture does not cover every expert-format pair in the pack");
         std::printf("expert_format_pairs=%zu all_pairs_covered=1\n",covered.size());
         std::vector<ExpertWorkerPair> plan;
-        for (int l : layers) for (int e = 0; e < 8; ++e) plan.push_back({l, e});
+        for (int l : layers) if(!per_layer || l==layers.front())
+            for (int e = 0; e < 8; ++e) plan.push_back({l, e});
         if (!net.install_plan(plan, error)) throw std::runtime_error(error);
         // Invalid local requests must be refused before they can reach the worker.
         std::vector<float> invalid_x(17 * g.hidden, 0.25f);
@@ -115,6 +117,19 @@ int main(int argc, char **argv) {
         std::normal_distribution<float> random(0, .5f);
         int cases = 0;
         for (int layer : layers) {
+            if(per_layer) {
+                if(layer!=layers.front()) {
+                    // Ownership stays immutable within each connection. A new
+                    // explicit fixture session installs the next layer's plan.
+                    net.print_summary();net.close();error.clear();
+                    if(!net.connect_and_handshake(argv[2],g.layers,g.layers,g.experts,g.hidden,g.intermediate,g.picks,
+                            sha,30000,error,arithmetic)) throw std::runtime_error(error);
+                    if(net.caps().max_tokens!=16) throw std::runtime_error("worker token limit changed across fixture sessions");
+                    plan.clear();for(int e=0;e<8;++e) plan.push_back({layer,e});
+                    if(!net.install_plan(plan,error)) throw std::runtime_error(error);
+                }
+                std::printf("DeepSeek tier fixture session: layer=%d owned=8 fresh_connection=1\n",layer);std::fflush(stdout);
+            }
             size_t sg = 0, su = 0, sd = 0;
             const auto prefix = "blk." + std::to_string(layer) + ".";
             const auto *gate = model.find(prefix + "ffn_gate_exps.weight", &sg);
