@@ -166,15 +166,17 @@ The native harness accepts these global options after `--experts 6` and before
 the role:
 
 ```text
---expert-worker NUMERIC_IP:PORT
+--expert-worker NUMERIC_IPV4:PORT
 --expert-worker-model FIRST_SOURCE_GGUF
 --expert-worker-placement PLACEMENT_FILE
 --expert-worker-timeout MILLISECONDS
 --plan-id NONZERO_SHA256
 ```
 
-Endpoint, source GGUF and placement must be supplied together. Expert delegation
-also requires an explicit shared plan ID on both layer owners. The timeout must
+Endpoint, source GGUF and placement must be supplied together. Layer and expert
+TCP currently accept numeric IPv4 endpoints; the harness refuses IPv6 and
+hostnames before loading. Expert delegation also requires an explicit shared
+plan ID on both layer owners. The timeout must
 be positive. Duplicate options, missing files and zero identities fail before
 loading. Every harness role requires `DS4_IQ_Q8K=1`, including layer-only runs;
 the native model also refuses expert networking with unqualified per32 arithmetic.

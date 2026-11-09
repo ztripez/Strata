@@ -150,10 +150,25 @@ def main() -> None:
             ),
             ("layer-only-per32-refused", role, "requires explicit DS4_IQ_Q8K=1", "0"),
             (
-                "ipv6-hybrid-per32-refused",
+                "ipv6-expert-endpoint-refused",
                 ["--expert-worker", "[::1]:19171"] + model + plan + identity + role,
-                "requires explicit DS4_IQ_Q8K=1",
+                "invalid numeric expert-worker endpoint",
                 "0",
+            ),
+            (
+                "ipv6-layer-endpoint-refused",
+                [
+                    "suffix",
+                    "PACK",
+                    "20",
+                    "[::1]:19170",
+                    "600000",
+                    "3600000",
+                    "1",
+                    str(output),
+                ],
+                "invalid numeric layer endpoint",
+                "1",
             ),
             (
                 "invalid-layer-endpoint",

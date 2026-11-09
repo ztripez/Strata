@@ -418,3 +418,9 @@ metadata, nonfinite/truncated rows and incomplete/extra captures.
 Eight synthetic test methods passed. Live teacher-forced capture, the frozen
 held-out corpus, baseline repeatability and E5 numerical/task acceptance remain
 open. See [the comparison commands](DEEPSEEK_LAYER_RPC.md#compare-completed-captures).
+
+The harness's endpoint admission now matches the current IPv4-only TCP transport.
+IPv6 literals and hostnames fail before loading. CUDA/HIP harness builds and
+thirty-eight admission cases per backend passed; active campaigns retain their
+earlier frozen binaries and use IPv4. Receipts are in
+`/var/tmp/strata-deepseek-ipv4-admission-20261109/`.

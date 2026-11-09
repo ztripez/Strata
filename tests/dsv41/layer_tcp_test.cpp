@@ -22,8 +22,8 @@ namespace R=deepseek_layer_rpc_detail;
 bool numeric_endpoint(const std::string &endpoint) {
     std::string host;uint16_t port=0;
     if(!expert_worker_parse_host_port(endpoint,host,port)) return false;
-    in_addr ipv4{};in6_addr ipv6{};
-    return inet_pton(AF_INET,host.c_str(),&ipv4)==1 || inet_pton(AF_INET6,host.c_str(),&ipv6)==1;
+    in_addr ipv4{};
+    return inet_pton(AF_INET,host.c_str(),&ipv4)==1;
 }
 std::string hex(const std::array<uint8_t,32> &bytes) {
     constexpr char digits[]="0123456789abcdef";std::string out;
