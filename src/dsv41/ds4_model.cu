@@ -15212,7 +15212,7 @@ core::DeepSeekBoundaryLayout Model::boundary_layout() const {
 bool Model::replay_boundary(const core::DeepSeekLayerBoundary& boundary, int rows, std::string& err) {
     return p_->replay_boundary(boundary, rows, err);
 }
-bool Model::boundary_state(std::vector<uint8_t>& out, std::string& err) { return p_->boundary_state(out, err); }
+bool Model::boundary_state(std::vector<uint8_t>& out, std::string& err, bool prefix) { return p_->boundary_state(out, err, prefix); }
 #endif
 int Model::image_token() const { return p_->img_tok; }
 int Model::dim() const { return p_->g.dim; }

@@ -205,3 +205,60 @@ window rings and expert arenas. Full raw receipts and the measurement limits are
 in the [fabric checkpoint](DISTRIBUTED_FABRIC_STATUS.md#e3-assigned-only-allocation-probe).
 This is not replay or connected-inference acceptance. The cut-24 range loader has
 build evidence only; its real allocation and cross-cut state tests remain open.
+
+## Assigned-range replay oracle
+
+`deepseek_layer_partition_test PACK FIRST_GGUF CUT [DECODE_STEPS=128]` loads a
+full reference plus independent prefix and suffix instances on one backend.
+The prefix emits its own boundary; the test compares that capture with the
+reference before passing it to the suffix. It compares finite, exact logits,
+token histories and both owners' persistent rings, compressors and source-cache
+rows after every window. Prefill uses one then sixteen rows; the default 128
+decode steps cross the window-ring wrap. A partial suffix cancellation requires
+all three instances to reset into a fresh session before continuing.
+
+The diagnostic `boundary_state(..., prefix=true)` selects the prefix region of
+the full oracle or an assigned prefix. The default selects the suffix. Assigned
+executors refuse a diagnostic view containing unowned layers, and failed views
+leave the caller's buffer unchanged. These bytes are not a checkpoint format.
+
+Captures zero inactive selection slots and the padded mixing coefficients beyond
+the model's residual-stream count. The native planner declares the live counts;
+`hc_pre_norm_kernel()` reads only the stream count. This removes stale scratch
+padding from the portable record without changing live fields or device buffers.
+No numerical tolerance is relaxed. The assigned replay probe compares all emitted
+bytes, including this deterministic padding.
+
+Allocation bounds alone do not prove a selected cache row is visible to the
+current query. The adapter also checks live top-k indices against the last
+producer's completed compression groups, and candidate block IDs against their
+producer's completed blocks. Both checks occur before applying an incoming
+capture. The replay fixtures include indices inside the allocated context but
+beyond those committed intervals and require unchanged state after rejection.
+Their runtime receipts remain open.
+
+CUDA/HIP builds pass. Runtime assigned replay remains **NOT RUN**. The test uses
+three native instances on one GPU; it does not establish separate-process TCP
+inference, mixed-backend quality, cluster memory fit or throughput. Its source and
+binary identities are separate from the already-queued two-executor E2 pilot.
+
+## Layer delivery state
+
+`DeepSeekLayerSession` owns delivery and acknowledgement state; the native
+`Model` continues to own all attention/KV state. Only one window may await ACK.
+An exact duplicate before ACK returns the retained result without another
+executor call. A conflicting window, next window before ACK, duplicate after ACK
+or invalid acknowledgement aborts the session. Executor failure also aborts,
+including failure after partial native mutation. Creating another delivery object
+does not reset native state or fence reused session IDs; the worker integration
+must do both before accepting a new session.
+
+The `DS4R` result record carries the original request identity, actual committed
+position, explicit logit-row count and finite FP32 logits. Its separate version
+and 16-MiB limit allow up to sixteen rows without changing the expert protocol.
+Shapes come from the trusted model layout. The result is retained only until an
+exact ACK; no local layer fallback or hidden retry is provided.
+
+GPU-free delivery/result tests and Lucy's address/undefined-behavior sanitizer
+checks pass. They are mock-executor evidence. These helpers do not yet implement
+plan installation, a TCP layer service or a connected native inference run.

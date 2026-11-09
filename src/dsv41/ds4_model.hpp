@@ -183,8 +183,10 @@ public:
     bool replay_boundary(const core::DeepSeekLayerBoundary& boundary, int logits_rows, std::string& err);
     /// Diagnostic bytes of the suffix's persistent rings/compressors and valid
     /// shared-source rows, for exact comparison with an uninterrupted executor.
-    /// This is an E2 oracle view, not a portable checkpoint or network message.
-    bool boundary_state(std::vector<uint8_t>& out, std::string& err);
+    /// `prefix` selects [0,cut) instead of [cut,n_layers); an assigned range
+    /// refuses a view it does not own. This is an oracle view, not a portable
+    /// checkpoint or network message.
+    bool boundary_state(std::vector<uint8_t>& out, std::string& err, bool prefix = false);
 #endif
 
     /// The DSpark drafter (speculative decoding): its block size (0: not loaded), drafts for the positions after `y`

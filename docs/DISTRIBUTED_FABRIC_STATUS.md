@@ -18,7 +18,8 @@ completed; output-quality qualification remains open. See
 The pinned ISTA-DAS 2.00-bpw seven-file set (256,816,878,701 bytes) is downloaded
 in `/mnt/storage/strata-models/deepseek41-ist-das-2.00bpw`. All seven files
 passed their source SHA-256 manifest through Lucy's NFS mount. Astor can read
-the store, but an independent full-file checksum pass on Astor is not claimed.
+the store. An independent full-file pass on Astor has now also verified all seven
+files against the pinned source SHA-256 manifest and exited 0.
 The earlier HTTP downloader failure and the successful Xet retry are retained.
 
 Strata's plain official pack recipe created `maya-ds4` beside those files,
@@ -76,8 +77,9 @@ Neither candidate has passed executor replay or runtime memory-fit checks.
 The host-only `DeepSeekWorkerGeometry` guard passes twelve synthetic metadata
 cases. The new `DS4B` layer-capture codec passes roundtrip and malformed-record
 checks for one and sixteen rows on Lucy and Astor. Address/undefined-behavior
-sanitizer checks also pass. Four GPU-free CTest targets (geometry, capture
-codec, bounded capture delivery and the existing expert protocol) pass. These results do not establish
+sanitizer checks also pass. Five GPU-free CTest targets (geometry, capture
+codec, bounded capture delivery, delivery-session/result contracts and the existing
+expert protocol) pass. These results do not establish
 device-state capture, a second executor's replay or network layer inference.
 
 The new capture-delivery tests pass on Lucy and Astor; address/undefined-behavior
@@ -87,6 +89,16 @@ the destination host record unchanged; trickle receive and blocked send respect
 one finite frame deadline. The expert and capture protocols share the underlying
 socket I/O routine, and expert-v1 golden-wire tests still pass. These CPU tests
 do not install a layer plan or exercise a GPU session across the network.
+
+The new delivery-session tests enforce one unacknowledged window, retained
+responses for identical duplicates, terminal errors for conflicts/late duplicates,
+and no implicit retry after an executor error. The separate `DS4R` result codec
+checks exact identity, actual committed position, finite logit rows and a bounded
+byte count. These CPU tests and Lucy's address/undefined-behavior sanitizer run
+pass. They use mock callbacks; native KV mutation and TCP layer-RPC integration
+remain separate gates. Native capture/replay now also checks selections against
+committed source rows, in addition to allocation bounds; its new runtime rejection
+cases have not run yet.
 
 The rebuilt HIP worker passes the existing eleven-case Qwen expert comparison
 in default and tiered modes. The tiered probe reports five GPU, five RAM and
@@ -107,8 +119,8 @@ five-minute fixture budget; tolerances and inputs remain unchanged.
 Evidence and source snapshots:
 `/var/tmp/strata-deepseek-e1-20261109/`, with the active attempt in `retry1/`.
 The worker and real parity fixture now have the bounded forward result below;
-the primary-network adapter has not run on a DeepSeek primary. E0's independent
-complete-artifact checks on Astor and the measured layer split remain incomplete.
+the primary-network adapter has not run on a DeepSeek primary. Full E0 acceptance
+and peak-allocation measurements during layer execution remain incomplete.
 No complete E0/E1/E2 gate pass is claimed by this checkpoint.
 
 The first real E1 default-policy DeepSeek fixture failed its CPU comparison:
@@ -147,12 +159,16 @@ the normal NFSv4.2 address still uses its 1-Gb bridge. Server interfaces,
 exports and existing mounts were not reconfigured. Temporary mounts, forwarding
 commands, byte-equivalence probe and pack-path relocation are recorded in
 `/var/tmp/strata-deepseek-e2-20261109/`. These are correctness-experiment paths,
-not an inference speed result. Astor's full seven-file check is still pending.
+not an inference speed result. Astor's full seven-file check also passed, with
+seven `OK` lines and exit 0 in `verify-astor.log`/`verify-astor.exit`.
 
 The native E2 capture/replay probe builds for CUDA and HIP. It uses two `Model`
 instances and the authoritative local layers/head, serializes the audited state
 between them, and compares exact logits, token histories, carry counts and owned
-attention state. Its runtime pilot has not run. Both instances still load full
+attention state. Its frozen cut-20 pilot passed one decode step, exact logits
+and persistent state, plus cancellation/reset/stale-session checks (exit 0).
+Its initial campaign reached position eighteen over three windows. This does not meet
+the two-cut, 128-decode-step E2 gate. Both instances still load full
 dense weights; assigned-only loading and separate-process network execution
 remain E3 work. See [the probe contract](DEEPSEEK_LAYER_STATE.md#native-executor-probe).
 
@@ -186,7 +202,20 @@ this is not a new SSD cache or another paging implementation.
 These receipts establish that both assigned halves loaded independently.
 They do not establish connected inference, exact state replay, numerical
 quality, five-token/second usability, C1/C2 capacity acceptance or speed.
-Astor's full seven-file checksum pass is running before the queued E2 pilot.
+Astor's full seven-file checksum pass completed successfully before the E2 pilot
+started. The pilot's exact source and executable are retained separately from
+the newer assigned-range implementation. The frozen HIP executable is copied to
+`deepseek_layer_replay_frozen-pilot` in the E2 evidence directory before rebuilding.
+The current-code full two-cut campaign is running from its separately frozen
+executable in `/var/tmp/strata-deepseek-e2-full-20261109/`. It requires 128 decode
+steps at each cut, exact comparisons and native future-selection rejection
+coverage. Its result is pending; the successful pilot does not substitute for it.
+
+The new `deepseek_layer_partition_test` builds for CUDA and HIP. It compares a
+full reference against independently loaded prefix/suffix executors, including
+exact handoff fields, logits and both owners' persistent state. Its runtime is
+NOT RUN. It is an in-process oracle; separate-process TCP execution remains
+unqualified even if this probe passes.
 
 ## Other unfinished work
 

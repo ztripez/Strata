@@ -57,6 +57,32 @@ void boundary_counts(int64_t p0, int T, std::vector<uint32_t>& top, std::vector<
     top.assign(top_counts,top_counts+T); cand.assign(cand_counts,cand_counts+T);
 }
 
+// The allocation can hold future cache rows too. A legal allocation index is
+// not necessarily a committed row visible to this query/window.
+bool boundary_selections(const strata::core::DeepSeekLayerBoundary& b, std::string& err) const {
+    int ratio = 0;
+    for (int il = 0; il < probe_cut; ++il) if (L[il].ix_src) ratio = L[il].ratio;
+    for (uint32_t t = 0; t < b.header.rows; ++t) {
+        const uint64_t end = b.header.position+t+1;
+        const uint64_t rows = ratio > 0 ? end/static_cast<uint32_t>(ratio) : 0;
+        for (uint32_t j = 0; j < b.topk_valid[t]; ++j)
+            if (static_cast<uint64_t>(b.topk[t*topk_stride()+j]) >= rows) {
+                err = "boundary references an uncommitted index selection"; return false;
+            }
+        if (!b.cand_valid[t]) continue;
+        if (g.cand_src < 0 || g.cand_src >= probe_cut || L[g.cand_src].ratio <= 0 || g.cand_blk <= 0) {
+            err = "boundary candidate producer is unavailable"; return false;
+        }
+        const uint64_t compressed = end/static_cast<uint32_t>(L[g.cand_src].ratio);
+        const uint64_t blocks = (compressed+g.cand_blk-1)/g.cand_blk;
+        for (uint32_t j = 0; j < b.cand_valid[t]; ++j)
+            if (static_cast<uint64_t>(b.cand[t*cand_stride()+j]) >= blocks) {
+                err = "boundary references an uncommitted candidate block"; return false;
+            }
+    }
+    return true;
+}
+
 bool emit_boundary(int64_t p0, int T, std::string& err) {
     if (!probe_observer || probe_poisoned) { err = "boundary source session is unavailable"; return false; }
     probe_poisoned = true; // Once prefix state changed, any incomplete handoff aborts this session.
@@ -77,6 +103,18 @@ bool emit_boundary(int64_t p0, int T, std::string& err) {
         };
         if (!get(b.h,d.h,static_cast<size_t>(T)*g.hc*g.dim) || !get(b.pre,d.pre,static_cast<size_t>(T)*8) ||
             !get(b.topk,d.topk,static_cast<size_t>(T)*topk_stride()) || !get(b.cand,d.cand,static_cast<size_t>(T)*cand_stride())) return false;
+        // Inactive scratch slots may still hold another layer/window's bytes.
+        // Only the declared live counts (and H residual mixing coefficients)
+        // are inputs at this cut. Give the portable capture deterministic
+        // padding without changing the authoritative device buffers or math.
+        for (int t = 0; t < T; ++t) {
+            strata::core::deepseek_boundary_detail::require(
+                b.topk_valid[t] <= static_cast<uint32_t>(topk_stride()) &&
+                b.cand_valid[t] <= static_cast<uint32_t>(cand_stride()),"boundary planner count exceeds its stride");
+            std::fill(b.pre.begin()+t*8+g.hc,b.pre.begin()+(t+1)*8,0.0f);
+            std::fill(b.topk.begin()+t*topk_stride()+b.topk_valid[t],b.topk.begin()+(t+1)*topk_stride(),0);
+            std::fill(b.cand.begin()+t*cand_stride()+b.cand_valid[t],b.cand.begin()+(t+1)*cand_stride(),0);
+        }
         for (const auto &spec : probe_layout.sources) {
             const Src *source = nullptr;
             for (const auto &s : srcs) if (s.layer == static_cast<int>(spec.layer)) source = &s;
@@ -89,6 +127,7 @@ bool emit_boundary(int64_t p0, int T, std::string& err) {
             b.caches.push_back(std::move(cache));
         }
         strata::core::deepseek_boundary_detail::validate(probe_layout,b);
+        if (!boundary_selections(b,err)) return false;
         if (!probe_observer(b,err)) return false;
         ++probe_sequence; probe_poisoned = false;
         return true;
@@ -109,6 +148,7 @@ bool replay_boundary(const strata::core::DeepSeekLayerBoundary& b, int logits_ro
         std::vector<uint32_t> top, cand;
         boundary_counts(pos,b.header.rows,top,cand);
         if (top != b.topk_valid || cand != b.cand_valid) { err = "boundary selection counts disagree with the model plan"; return false; }
+        if (!boundary_selections(b,err)) return false;
         halted = false;
         if (cancel && cancel()) { halted = true; err = "boundary replay cancelled before mutation"; return false; }
         probe_poisoned = true;
@@ -142,16 +182,18 @@ bool replay_boundary(const strata::core::DeepSeekLayerBoundary& b, int logits_ro
     } catch (const std::exception &e) { err = e.what(); return false; }
 }
 
-bool boundary_state(std::vector<uint8_t>& out, std::string& err) {
-    if (layer_range() && !owns_layer(g.nl-1)) {
-        err = "the E2 suffix-state oracle is unavailable on an assigned prefix";
+bool boundary_state(std::vector<uint8_t>& out, std::string& err, bool prefix) {
+    if (probe_cut < 0 || probe_poisoned) { err = "no complete boundary state"; return false; }
+    const int first = prefix ? 0 : probe_cut, last = prefix ? probe_cut : g.nl;
+    if (layer_range() && (!owns_layer(first) || !owns_layer(last-1))) {
+        err = "the requested state oracle includes unowned layers";
         return false;
     }
-    if (probe_cut < 0 || probe_poisoned) { err = "no complete boundary state"; return false; }
     Dev &d = devs[0];
     CK(cudaSetDevice(d.id)); CK(cudaStreamSynchronize(d.st));
     strata::core::ExpertWireWriter w;
-    w.put(static_cast<uint32_t>(probe_cut)); w.put(static_cast<uint64_t>(pos));
+    w.put(static_cast<uint32_t>(first)); w.put(static_cast<uint32_t>(last));
+    w.put(static_cast<uint64_t>(pos));
     w.put(probe_sequence);
     w.put(static_cast<uint64_t>(toks.size())); for (const auto token : toks) w.put(token);
     w.put(static_cast<uint64_t>(ctoks.size())); for (const auto token : ctoks) w.put(token);
@@ -163,7 +205,7 @@ bool boundary_state(std::vector<uint8_t>& out, std::string& err) {
         if (bytes) CK(cudaMemcpy(w.bytes.data()+offset,device,bytes,cudaMemcpyDeviceToHost));
         return true;
     };
-    for (int il = probe_cut; il < g.nl; ++il) {
+    for (int il = first; il < last; ++il) {
         const auto &l = L[il];
         w.put(static_cast<uint32_t>(il));
         if (!get(l.win,static_cast<size_t>(g.win)*win_rb()) ||
@@ -172,7 +214,7 @@ bool boundary_state(std::vector<uint8_t>& out, std::string& err) {
     }
     for (size_t si = 0; si < srcs.size(); ++si) {
         bool kv = false, keys = false;
-        for (int il = probe_cut; il < g.nl; ++il) {
+        for (int il = first; il < last; ++il) {
             kv = kv || L[il].src == static_cast<int>(si);
             keys = keys || (L[il].ix_src && L[il].ik_src == static_cast<int>(si));
         }
