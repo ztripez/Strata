@@ -165,6 +165,12 @@ public:
     /// The last feed's logit rows on the host (rows x vocab floats).
     bool logits(std::vector<float>& out);
 #if defined(STRATA_NETWORK_EXPERTS)
+    /// Identity of the actual loaded GGUF mappings and parsed execution pack.
+    /// Model digest is DS4M1: ordered byte sizes and SHA-256 of every mapping;
+    /// pack digest uses the DS4P1 canonical parsed metadata, excluding only the
+    /// model_dir locator. This is distinct from E1's four-main-shard digest and
+    /// E2's raw pack-file digest. Outputs are unchanged on failure.
+    bool boundary_artifacts(std::array<uint8_t,32>& model, std::array<uint8_t,32>& pack, std::string& err);
     /// Configure an E2 boundary probe on a freshly reset, deterministic window
     /// executor. The caller supplies identities from its verified manifest.
     /// A nonempty observer receives the cut state during ordinary feed(); an

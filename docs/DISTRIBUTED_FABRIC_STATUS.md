@@ -242,3 +242,34 @@ lost acknowledgements and deadlines. Lucy's RPC test passed ASan/UBSan; the
 network library built in the CUDA and HIP build trees. See
 [the delivery contract](DEEPSEEK_LAYER_RPC.md). Native TCP adapters and connected
 inference are NOT RUN; these tests do not advance the E3 inference gate.
+
+## Native TCP layer harness startup
+
+The opt-in `deepseek_layer_tcp_test` builds on CUDA and HIP. Its suffix invokes
+native `replay_boundary()` and returns the actual native position/logits. Its
+prefix invokes the persistent DS4L client from the existing native boundary
+observer. It requires explicit `--experts 6`; native configuration and loaded
+artifact receipts verify that effective count on every layer. Six invalid CLI
+admission cases fail before loading on both backends. The shared SHA helper
+passes the independent SHA-256 `abc` vector and split-span/null-input tests.
+
+The loaded model supplies DS4M1/DS4P1 identities from actual mapped weights and
+parsed pack data, excluding only the backing-directory locator. An independent
+Python oracle reconstructed expected identities from the previously verified
+source SHA manifest and raw pack metadata. This remains an expected-value
+oracle until actual native receipts match it; equal peer claims alone do not
+qualify source integrity.
+
+A frozen one-prompt, 128-token cross-host campaign is starting in
+`/var/tmp/strata-deepseek-e3-tcp-20261109/`. Lucy's assigned CUDA suffix is loading;
+Astor's HIP prefix is withheld until the assigned-only native cut20 oracle
+passes. Full-file verification, bounded startup/decode deadlines, exact source/
+binary snapshots, token/window logs and acknowledged logits are retained.
+The assigned-only oracle in `/var/tmp/strata-deepseek-e3-partition-20261109/`
+is running with a full reference and independent prefix/suffix models. Its
+comparisons are exact so far; neither campaign has passed its final checks.
+
+One long prompt would still be a partial E3 result. A second distinct long
+prompt, normal EOS, native restart/loss behavior, same-backend TCP control and
+measured memory bounds remain required. E4 hybrid experts, E5 quality and the
+orchestrator/capacity/performance gates remain open.

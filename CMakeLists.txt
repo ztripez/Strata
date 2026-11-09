@@ -1074,7 +1074,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
       # inherit its complete build contract rather than maintaining another list.
       get_target_property(_ds4_replay_sources strata-dsv41 SOURCES)
       list(REMOVE_ITEM _ds4_replay_sources src/dsv41/ds4_main.cpp)
-      foreach(_ds4_probe IN ITEMS layer_replay_test layer_range_load_test layer_partition_test)
+      foreach(_ds4_probe IN ITEMS layer_replay_test layer_range_load_test layer_partition_test layer_tcp_test)
         add_executable(deepseek_${_ds4_probe} EXCLUDE_FROM_ALL tests/dsv41/${_ds4_probe}.cpp ${_ds4_replay_sources})
         target_include_directories(deepseek_${_ds4_probe} PRIVATE
           "$<TARGET_PROPERTY:strata-dsv41,INCLUDE_DIRECTORIES>" ${CMAKE_CURRENT_SOURCE_DIR}/src/dsv41)

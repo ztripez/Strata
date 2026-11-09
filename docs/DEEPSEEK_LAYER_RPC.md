@@ -76,3 +76,73 @@ on Lucy. The shared network library built in both CUDA and HIP build trees.
 
 These are delivery-contract tests, not GPU arithmetic, native TCP inference,
 mixed-backend parity, quality, recovery, capacity or performance evidence.
+
+## Native layer-only harness (qualification pending)
+
+`deepseek_layer_tcp_test` is a separately built native harness, not a server/app
+integration. It is opt-in and excluded from the default build. It supports a
+suffix service, an assigned prefix coordinator and a complete native reference:
+
+```sh
+# Build by name in a configured CUDA or HIP build directory.
+cmake --build BUILD --target deepseek_layer_tcp_test
+
+# New output directories are required; existing evidence is never overwritten.
+DS4_IQ_Q8K=1 BUILD/deepseek_layer_tcp_test --experts 6 suffix PACK 20 0.0.0.0:19170 600000 3600000 SUFFIX_OUT
+DS4_IQ_Q8K=1 BUILD/deepseek_layer_tcp_test --experts 6 prefix PACK 20 WORKER_IP:19170 WORKER_EXE_SHA256 PROMPT_IDS 128 1 PREFIX_OUT
+DS4_IQ_Q8K=1 BUILD/deepseek_layer_tcp_test --experts 6 reference PACK PROMPT_IDS 128 1 REFERENCE_OUT
+```
+
+`PROMPT_IDS` contains whitespace-separated token IDs from the pinned tokenizer.
+The harness uses one sequence, context 2048, native synchronous windows, six
+experts, mapped CPU experts, no expert GPU cache/RAM store, no DSpark and no
+vision. Prefix and suffix load only their assigned ranges. A 16-row prompt
+window returns its final logit row; decode uses one row. The coordinator's
+initial greedy policy chooses the first finite maximum; the reference mode
+checks this choice against the existing native sampler for each window.
+
+The final `1` explicitly continues after EOS for long functional probes. `0`
+stops at the pinned pack's EOS token 1; logs distinguish EOS from the token limit.
+Every committed window records input IDs, position, next token and raw logits.
+The prefix also retains acknowledged DS4R records. A failed layer transaction
+aborts; it never generates a continuation from unacknowledged output.
+
+The suffix's discovery receipt is derived after native configuration. BEGIN
+resets/configures the native suffix again. The callback calls `replay_boundary()`
+and reads `Model::logits()`/`pos()`; the prefix callback calls the persistent TCP
+client during the existing `feed()` boundary observer. Native cancellation polls
+a computation deadline; a separate process supervisor is still required to
+bound stalled device/filesystem calls. Socket and accept timeouts are separate.
+The service handles one connection in this harness, then resets and exits.
+
+### Loaded artifact identity
+
+The native model's `boundary_artifacts()` hashes its actual read-only backing
+mappings, including Engram, rather than reopening a purported model path. It
+refuses an unloaded pack or any layer whose effective expert count is not six.
+For this pack there are six backing files: four main shards, Engram and DSpark.
+The tokenizer/config metadata source is separately pinned in the seven-file
+source manifest; this token-ID harness does not run a tokenizer.
+
+The new identity domains are explicit and have no compatibility fallback:
+
+- **DS4M1 model identity:** SHA-256 of literal `DS4M1` plus its NUL byte, file
+  count (u32), then file-index-ordered byte size (u64) and SHA-256 (32 bytes)
+  of each actual mapped file. Integers are little endian. This can be checked
+  independently against the previously verified full-file source manifest.
+- **DS4P1 pack identity:** SHA-256 of a length-prefixed `DS4P1` string; sorted
+  parsed key/value metadata, excluding only `model_dir`; indexed backing names
+  and byte sizes; sorted parsed tensor names/types/file indices/offsets/sizes/
+  shapes; and parsed Engram header/map/multiplier/prime/offset arrays. Strings
+  have u32 byte lengths, collection counts are u32 (Engram arrays u64), shapes
+  and Engram integer arrays use their native signed 32/64-bit widths, and all
+  scalar bytes are little endian. File index is signed i32; offsets/sizes u64.
+
+These differ from E1's raw four-shard digest and E2's raw pack-file digest.
+Excluding the `model_dir` locator permits verified local and NFS backing paths
+to share an execution identity without allowing different parsed tensor views.
+The harness's plan ID is a bounded layer-only test identity; installation of a
+complete resource/expert/orchestrator manifest remains E6 work.
+
+The harness builds on CUDA and HIP. Its native TCP runtime, greedy sampler
+comparison and independent loaded-identity agreement are not yet qualified.

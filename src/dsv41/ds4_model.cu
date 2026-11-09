@@ -15201,6 +15201,9 @@ void Model::set_penalties(int last_n, float repeat, float freq, float present) {
 }
 bool Model::logits(std::vector<float>& out) { return p_->logits(out); }
 #if defined(STRATA_NETWORK_EXPERTS)
+bool Model::boundary_artifacts(std::array<uint8_t,32>& model, std::array<uint8_t,32>& pack, std::string& err) {
+    return p_->boundary_artifacts(model,pack,err);
+}
 bool Model::configure_boundary_probe(int cut, const core::DeepSeekBoundaryHeader& identity,
     std::function<bool(const core::DeepSeekLayerBoundary&, std::string&)> observer, std::string& err) {
     return p_->configure_boundary_probe(cut, identity, std::move(observer), err);

@@ -1,5 +1,54 @@
 // Included inside Model::Impl: E2 host adapter around the authoritative layer(),
 // plan_window(), head and attention-state paths. No alternative arithmetic/cache.
+bool boundary_artifacts(std::array<uint8_t,32>& model, std::array<uint8_t,32>& pack, std::string& err) {
+    if (!pk.gguf || pk.files.empty() || pk.files.size()!=pk.maps.size() || pk.fds.size()!=pk.maps.size() ||
+        L.size()!=static_cast<size_t>(g.nl) || L.empty() ||
+        std::any_of(L.begin(),L.end(),[](const auto &layer){return layer.k_exp!=6;})) {
+        err="layer artifact identity requires a loaded mapped GGUF pack with six effective experts on every layer"; return false;
+    }
+    try {
+        strata::core::ExpertWireWriter w;
+        const auto text=[&](const std::string &s) {
+            if(s.size()>UINT32_MAX) throw std::runtime_error("pack identity string exceeds wire bound");
+            w.put(static_cast<uint32_t>(s.size()));w.bytes.insert(w.bytes.end(),s.begin(),s.end());
+        };
+        text("DS4P1");
+        std::map<std::string,std::string> metadata(pk.kv.begin(),pk.kv.end());
+        metadata.erase("model_dir");
+        w.put(static_cast<uint32_t>(metadata.size()));
+        for(const auto &[key,value]:metadata) {text(key);text(value);}
+        strata::core::ExpertWireWriter manifest;
+        manifest.put("DS4M1");manifest.put(static_cast<uint32_t>(pk.files.size()));
+        w.put(static_cast<uint32_t>(pk.files.size()));
+        for(size_t i=0;i<pk.files.size();++i) {
+            const auto &[data,size]=pk.maps[i];
+            if(!data || !size || os::file_size(pk.fds[i])!=size) throw std::runtime_error("loaded pack mapping is absent or changed size");
+            text(pk.files[i]);w.put(static_cast<uint64_t>(size));
+            const auto file_hash=strata::core::expert_worker_spans_sha256({{data,size}});
+            manifest(static_cast<uint64_t>(size),file_hash);
+            if(o.verbose) {
+                std::fprintf(stderr,"ds4-layer-artifact: index=%zu file=%s bytes=%zu sha256=",i,pk.files[i].c_str(),size);
+                for(const auto byte:file_hash) std::fprintf(stderr,"%02x",byte);
+                std::fprintf(stderr,"\n");
+            }
+        }
+        std::map<std::string,Tensor> tensors(pk.t.begin(),pk.t.end());
+        w.put(static_cast<uint32_t>(tensors.size()));
+        for(const auto &[name,tensor]:tensors) {
+            text(name);text(tensor.dtype);w(static_cast<int32_t>(tensor.file),static_cast<uint64_t>(tensor.off),static_cast<uint64_t>(tensor.bytes));
+            w.put(static_cast<uint32_t>(tensor.shape.size()));
+            for(const auto dim:tensor.shape) w.put(static_cast<int64_t>(dim));
+        }
+        w(static_cast<int32_t>(pk.eg_vocab),static_cast<int32_t>(pk.eg_layers),static_cast<int32_t>(pk.eg_ngram),
+          static_cast<int32_t>(pk.eg_heads),static_cast<int32_t>(pk.eg_hd),static_cast<int32_t>(pk.eg_pad));
+        const auto values=[&](const auto &v) {w.put(static_cast<uint64_t>(v.size()));for(const auto x:v) w.put(x);};
+        values(pk.eg_map);values(pk.eg_mult);values(pk.eg_primes);values(pk.eg_off);
+        const auto pack_hash=strata::core::expert_worker_spans_sha256({{w.bytes.data(),w.bytes.size()}});
+        const auto model_hash=strata::core::expert_worker_spans_sha256({{manifest.bytes.data(),manifest.bytes.size()}});
+        model=model_hash;pack=pack_hash;return true;
+    } catch(const std::exception &e) {err=e.what();return false;}
+}
+
 bool configure_boundary_probe(int cut, const strata::core::DeepSeekBoundaryHeader& identity,
     std::function<bool(const strata::core::DeepSeekLayerBoundary&, std::string&)> observer, std::string& err) {
     if (layer_range() && (observer ? !(o.layer_begin == 0 && o.layer_end == cut)

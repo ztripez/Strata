@@ -53,6 +53,10 @@ int main(int argc, char **argv) {
         }
         {
             strata::ds4::Model model; std::string error;
+            std::array<uint8_t,32> absent_model{42},absent_pack{43};
+            const auto unchanged_model=absent_model,unchanged_pack=absent_pack;
+            check(!model.boundary_artifacts(absent_model,absent_pack,error) && absent_model==unchanged_model && absent_pack==unchanged_pack,
+                  "unloaded model published a layer artifact identity");
             check(model.load(o,error),error); memory("loaded");
             // A range cannot accidentally execute the complete graph or migrate
             // a native all-layer checkpoint before a boundary session exists.

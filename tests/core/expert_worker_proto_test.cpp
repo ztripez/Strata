@@ -1,6 +1,7 @@
 // GPU-free protocol/executor contract tests. Mock arithmetic is independently
 // calculated by the client, including sparse tokens and repeated expert inputs.
 #include "strata/core/expert_worker_wire.hpp"
+#include "strata/core/expert_worker_identity.hpp"
 #include "strata/core/network_experts.hpp"
 #include <algorithm>
 #include <arpa/inet.h>
@@ -372,6 +373,15 @@ void framing_tests() {
     unlink(path.c_str());
 }
 } // namespace
+void identity_span_tests() {
+    const uint8_t abc[]={0x61,0x62,0x63};
+    const std::array<uint8_t,32> expected{0xba,0x78,0x16,0xbf,0x8f,0x01,0xcf,0xea,0x41,0x41,0x40,0xde,0x5d,0xae,0x22,0x23,
+        0xb0,0x03,0x61,0xa3,0x96,0x17,0x7a,0x9c,0xb4,0x10,0xff,0x61,0xf2,0x00,0x15,0xad};
+    check(expert_worker_spans_sha256({{abc,1},{abc+1,2}})==expected,"loaded span SHA-256 differs from standard abc vector");
+    check(expert_worker_spans_sha256({{abc,3}})==expected,"span boundaries changed digest");
+    bool rejected=false;try {expert_worker_spans_sha256({{nullptr,3}});} catch(const std::runtime_error &) {rejected=true;}
+    check(rejected,"accepted null nonempty loaded mapping");
+}
 int main(int argc, char **argv) {
     try {
         std::string server, client;
@@ -413,6 +423,7 @@ int main(int argc, char **argv) {
             valid_execution(net, iters);
             net.print_summary(stdout);
         } else {
+            identity_span_tests();
             framing_tests();
             executor_tests();
         }
