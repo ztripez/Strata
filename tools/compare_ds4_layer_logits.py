@@ -18,6 +18,7 @@ VOCABULARY = 129280
 Token = Annotated[int, Field(ge=0, lt=VOCABULARY)]
 WindowIndex = Annotated[int, Field(ge=1, le=2048)]
 TokenList = TypeAdapter(list[Token])
+TokenTextList = TypeAdapter(list[Annotated[str, Field(pattern=r"^[0-9]+$")]])
 ReferenceMode = Literal["teacher-forced", "greedy"]
 
 
@@ -106,7 +107,9 @@ def read_records(path: Path, schema: type[RecordT]) -> list[RecordT]:
 
 def read_tokens(path: Path) -> list[int]:
     """Validate the native harness's whitespace-separated decimal token inputs."""
-    return TokenList.validate_python(path.read_text().split())
+    return TokenList.validate_python(
+        TokenTextList.validate_python(path.read_text().split())
+    )
 
 
 def trajectory(

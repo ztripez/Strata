@@ -279,6 +279,30 @@ The campaign still verifies model/pack/executable identities and acknowledged
 delivery, baseline repeatability, the frozen five-prompt/1,000-position corpus,
 the numerical thresholds and the separate eight-task gate.
 
+### Freeze the actual greedy reference
+
+The baseline must save its complete greedy continuation with `IGNORE_EOS=1`
+for the requested fixed count. Freeze those selected IDs before running a
+teacher-forced candidate:
+
+```sh
+uv run --no-project --with pydantic==2.14.2 python -m tools.freeze_ds4_reference freeze BASELINE_OUT PROMPT_IDS 200 NEW_FROZEN_CASE
+uv run --no-project --with pydantic==2.14.2 python -m tools.freeze_ds4_reference verify SECOND_BASELINE_OUT NEW_FROZEN_CASE NEW_REPEAT_REPORT.json
+```
+
+The helper validates the entire prompt/continuation history, every finite raw
+logit row and its argmax, including the final post-target row. It copies every
+selected ID in order, including EOS, and records input/history/logit hashes.
+Existing destinations are refused. Token text must use unsigned decimal IDs;
+floating-point text such as `1.0` is not silently converted to a token.
+
+The second ordinary baseline must use the same pinned binary, weights, arithmetic
+and resource settings. Its exact history/raw-row comparison establishes the
+repeatability floor only after the campaign verifies those runtime identities.
+A failed numerical repeat writes a failed receipt and exits nonzero. Neither a
+frozen file nor this helper's success establishes an E5 pass or replaces the
+held-out corpus and task gates.
+
 The scorer passed analytic divergence/direction/normalization controls and
 malformed/incomplete capture tests. This synthetic evidence does not qualify
 native teacher-forced execution or full-model output quality.
