@@ -6,6 +6,15 @@
 **Model ladder:** Qwen3.6-35B-A3B → DeepSeek V4.1-Flash → Kimi K3  
 **Status:** Specification. No new benchmark results are asserted in this document.
 
+**Execution update, 9 November:**
+[Network-sharded DeepSeek execution plan](NETWORK_SHARDED_DEEPSEEK_PLAN.md) is the
+next implementation plan and proposed acceptance contract. It extends this v0.1 design
+to whole-layer placement plus MoE offload. The fixed Lucy-primary/Astor-worker
+diagram below describes the initial expert-only configuration, not a constraint
+on layer ownership. A layer owner executes its router; the coordinator need not
+own every dense layer. A node need only fit its assigned range, not a solo copy
+of the entire dense model. Historical measurements below remain unchanged.
+
 > [!IMPORTANT]
 > ## NON-NEGOTIABLE: STRATA ALREADY HAS STAGED MoE ALLOCATION
 >
