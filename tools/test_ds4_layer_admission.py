@@ -367,6 +367,46 @@ def main() -> None:
                 ),
             ]
         )
+        cases.extend(
+            [
+                (
+                    "cpu-zero",
+                    ["--cpu-threads", "0"] + role,
+                    "CPU thread limit must be positive",
+                    "1",
+                ),
+                (
+                    "cpu-negative",
+                    ["--cpu-threads", "-1"] + role,
+                    "invalid probe argument",
+                    "1",
+                ),
+                (
+                    "cpu-over-limit",
+                    ["--cpu-threads", "65"] + role,
+                    "invalid probe argument",
+                    "1",
+                ),
+                (
+                    "cpu-invalid-text",
+                    ["--cpu-threads", "8suffix"] + role,
+                    "invalid probe argument",
+                    "1",
+                ),
+                (
+                    "cpu-missing-plan",
+                    ["--cpu-threads", "8"] + role,
+                    "nondefault CPU thread limit requires an explicit --plan-id",
+                    "1",
+                ),
+                (
+                    "cpu-explicit-profile-parsed",
+                    ["--cpu-threads", "8"] + identity + role,
+                    "requires explicit DS4_IQ_Q8K=1",
+                    "0",
+                ),
+            ]
+        )
         for name, arguments, expected, arithmetic in cases:
             environment = dict(os.environ, DS4_IQ_Q8K=arithmetic)
             result = subprocess.run(

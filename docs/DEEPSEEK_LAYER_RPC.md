@@ -215,6 +215,15 @@ receipts retain their original zero-residency profile.
 
 ### Teacher-forced logit capture
 
+The qualification harness also accepts `--cpu-threads N` before the role, using
+the existing native CPU pool limit (1..64). Its default stays two. A different
+limit requires an explicit shared `--plan-id`, whose experiment manifest must
+bind each role's CPU budget. The native startup description records the effective
+pool size; the requested limit is not a promise that every thread will be used.
+This does not change the expert worker's separate two-thread CPU profile.
+CPU-budget changes need their own capture/repeatability qualification before
+fresh held-out data. Previously frozen campaigns retain their original limits.
+
 For same-prefix numerical comparisons, put `--decode-mode teacher-forced` before
 the prefix/reference role. Each request's `DECODE` argument then names a token-ID
 file containing the unchanged reference continuation:
