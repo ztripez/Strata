@@ -91,7 +91,7 @@ qualification remain separate.
 
 ## Larger CPU-budget control
 
-The sealed fixture in `/var/tmp/strata-deepseek-e5-cpu8-control-20261110/`
+The sealed continuation in `/var/tmp/strata-deepseek-e5-cpu8-control-20261110-r2/`
 requires exact short-capture agreement with the earlier two-thread control,
 using the existing native CPU pool with an eight-thread limit. A separate
 excluded marker prompt has 1,848 input tokens and 200 fixed targets, reaching
@@ -131,8 +131,12 @@ functional run; it is not fresh E5 qualification. Receipts are in
 
 ## Fresh quality campaign
 
-The fixture in `/var/tmp/strata-deepseek-e5-quality-20261110/` pins 79 input,
-binary and support files on both hosts. Its controller waits for the accepted
+The current fixture in `/var/tmp/strata-deepseek-e5-quality-20261110-r2/` pins
+106 input, binary and control files on both hosts. The original 79-file trial
+refused execution after its upstream mixed-loss controller hit an observer race;
+its failure remains intact. The continuation uses identical corpus, binary and
+acceptance-condition bytes and adds fresh argument/control receipts. Its
+controller waits for the accepted
 hybrid, capture/reset, mixed-host layer-loss and CPU8/2K controls. Before fresh
 inference it rechecks their sealed inputs, completed exits and actual CPU pool
 receipts, then records the baseline seal. A failed prerequisite withholds fresh

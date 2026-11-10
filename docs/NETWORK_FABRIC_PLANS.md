@@ -128,3 +128,68 @@ passed actual CUDA/HIP syntax-only checks. Five CLI controls reproduced all
 and changed evidence without replacing prior output. Receipts and the synthetic
 inputs are retained in `/var/tmp/strata-fabric-plan-controls-20261110/`.
 No native model ran as part of these plan controls.
+
+## Node agent and installation ownership
+
+`strata_control.fabric_node` provides the node side of installation. It verifies
+the declared node's seven backing files, pack files, binaries, exported tokenizer
+and pinned evidence. It then takes a fresh reading through the existing Control
+inventory and checks the same resource constraints. It streams large file hashes;
+it creates no model-weight cache or mirror.
+
+The agent takes a per-node advisory lock in a separate persistent state directory.
+An epoch must be newer than the stored epoch. The epoch record is atomically
+replaced and fsynced before native processes can start. Failed/partial starts do
+not reset it. A corrupt record, another active owner or an existing runtime
+directory causes refusal. Keep this state directory outside the fresh runtime
+directory; it must survive installation cleanup.
+
+The internal entry point is:
+
+```sh
+uv run --no-project --with pydantic==2.14.2 --with regex==2026.9.10 --with jinja2==3.1.6 \
+  python -m strata_control.fabric_node \
+  --installation /absolute/path/to/bundle/installation.json \
+  --node astor --evidence-dir /absolute/path/to/bundle/evidence \
+  --state-dir /absolute/path/to/persistent-node-state
+```
+
+The controller keeps stdin open and sends one JSON command at a time, awaiting
+its reply. Commands have increasing positive `id` values and an `action` of
+`verify`, `start-worker`, `start-suffix`, `ownership`, `status` or `stop`.
+Commands carry no arbitrary argv or per-token work. The agent derives native
+arguments from the canonical plan. Only the suffix can start here; the coordinator
+must start the prefix through the existing HTTP adapter after node preparation.
+
+Worker listening and ownership READY are separate states. Admission must check
+both: actual model identity/six-expert arithmetic and exact installed ownership,
+tier counts and GPU/copied-RAM bytes. Suffix admission checks its actual INFO,
+epoch, process incarnation and all six native post-load file hashes. A PID alone
+never identifies a process: startup records include argv, birth token and the
+running executable's hash. Linux pidfds bind subsequent signals to that process
+instance. The existing lifeline and owner guard cover parent loss.
+
+`stop` closes owned children before replying and retains raw per-process exits.
+EOF, malformed/pipelined commands and failed operations terminate the agent and
+unwind its owned resources. Atomic, exclusive record publication preserves prior
+evidence. A failed expert process remains visible in status; it may be handled by
+the plan's existing native local-recomputation policy. A lost stateful layer must
+abort the request. No process is automatically restarted.
+
+This agent never opens HTTP or publishes a whole plan. The two-node coordinator,
+global readiness barrier, drain/reload path, accepted capability/resource evidence
+and measured placement ranking remain separate requirements. A pinned evidence
+file is not automatically an accepted qualification claim. Kernel-blocked I/O
+can outlive a stop deadline; it needs an explicit failure/quarantine outcome.
+
+The node controls use a synthetic C++ executable with no model parsing, GPU or
+inference. They test real file verification, process/epoch ownership, bad receipt
+refusal, raw exits and parent EOF during startup. They do not qualify DeepSeek
+execution through the agent.
+
+On 10 November 2026, 13 node/lease/process controls and the 29 focused
+manifest/inventory/HTTP controls passed on each host, with no skips. The argument
+checks used the actual CUDA/HIP layer executables; model-free lifecycle tests used
+the explicitly synthetic ELF fixture. Receipts are retained in
+`/var/tmp/strata-fabric-node-controls-20261110/`. Native DeepSeek execution and
+whole-plan activation through this agent have not run.

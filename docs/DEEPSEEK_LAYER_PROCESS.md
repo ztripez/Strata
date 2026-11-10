@@ -211,9 +211,13 @@ execute a model with a new epoch or implement transactional plan installation.
 
 ## Native endpoint qualification
 
-The frozen fixture in `/var/tmp/strata-deepseek-layer-api-20261110/` is queued
-behind successful fresh E5 acceptance. It verified all 281 pinned input/control
-files on both hosts before waiting. No model has run through this fixture yet.
+The frozen continuation in `/var/tmp/strata-deepseek-layer-api-20261110-r2/` is
+queued behind successful fresh E5 acceptance. All 254 pinned input/control files
+match on both hosts. The original 281-file trial correctly refused to launch
+after an upstream observer failure; its old preparation records remain there.
+The continuation retains the original binaries, frozen serving bundle, request
+and EOS-oracle bytes, resource limits and timeouts. No model has run through
+either HTTP fixture yet.
 Five fixture controls passed on each host, including failure capture, cancellation
 drain ordering, observing layer loss without disconnecting the client, refusal of
 an incorrect process birth time and refusal to launch after a failed prerequisite.

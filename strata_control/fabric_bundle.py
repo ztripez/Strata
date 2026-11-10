@@ -12,7 +12,7 @@ from typing import Annotated, Literal
 
 from pydantic import Field, field_validator, model_validator
 
-from serve.deepseek_layer import Launch, PrefixReceipt
+from serve.deepseek_layer import Launch, LayerReceipt, PrefixReceipt
 from serve.tokenizer_assets import Record
 from strata_control.fabric_plan import (
     ExpertOwner,
@@ -197,31 +197,41 @@ class Installation(Record):
             "--verbose",
         ]
 
+    def layer_receipt(self, role: Role) -> LayerReceipt:
+        """Expected runtime identity derived from the same canonical native argv."""
+        if role not in ("prefix", "suffix"):
+            raise ValueError("unknown layer role")
+        plan = self.document.plan
+        owner = plan.prefix if role == "prefix" else plan.suffix
+        node = next(node for node in plan.nodes if node.id == owner.node)
+        return LayerReceipt(
+            arch="deepseek41",
+            fabric=1,
+            role=role,
+            context=2048,
+            effective_experts=6,
+            arithmetic=2,
+            model_sha256=plan.model.model_sha256,
+            pack_sha256=plan.model.pack_sha256,
+            plan_sha256=self.document.plan_sha256,
+            plan_epoch=self.epoch,
+            binary_sha256=node.layer_binary.sha256,
+            cpu_threads_limit=owner.cpu_threads,
+            expert_vram_mib=owner.expert_vram_mib,
+            request_timeout_ms=plan.deadlines.request_ms if role == "prefix" else 0,
+            rpc_timeout_ms=plan.deadlines.layer_rpc_ms,
+            idle_timeout_ms=0 if role == "prefix" else plan.deadlines.idle_ms,
+        )
+
     def http_launch(self) -> Launch:
         """Build the existing prefix adapter binding; this does not start HTTP."""
         plan = self.document.plan
-        node = next(node for node in plan.nodes if node.id == plan.prefix.node)
-        place = self.location(node.id)
+        place = self.location(plan.prefix.node)
         return Launch(
             executable=place.layer_binary,
             native_args=self.layer_arguments("prefix"),
-            expected=PrefixReceipt(
-                arch="deepseek41",
-                fabric=1,
-                role="prefix",
-                context=2048,
-                effective_experts=6,
-                arithmetic=2,
-                model_sha256=plan.model.model_sha256,
-                pack_sha256=plan.model.pack_sha256,
-                plan_sha256=self.document.plan_sha256,
-                plan_epoch=self.epoch,
-                binary_sha256=node.layer_binary.sha256,
-                cpu_threads_limit=plan.prefix.cpu_threads,
-                expert_vram_mib=plan.prefix.expert_vram_mib,
-                request_timeout_ms=plan.deadlines.request_ms,
-                rpc_timeout_ms=plan.deadlines.layer_rpc_ms,
-                idle_timeout_ms=0,
+            expected=PrefixReceipt.model_validate(
+                self.layer_receipt("prefix").model_dump()
             ),
             tokenizer_dir=place.tokenizer_dir,
             tokenizer=plan.model.tokenizer,

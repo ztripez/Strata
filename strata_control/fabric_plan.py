@@ -36,6 +36,12 @@ class FilePin(Record):
         )
         return raw
 
+    def verify(self, path: Path) -> None:
+        """Stream large backing files through Control's existing verifier."""
+        Artifact(self.name, None, self.sha256, self.bytes, format="file").verify_file(
+            path
+        )
+
 
 class Model(Record):
     """Native model identities and the complete immutable backing/pack inventory."""
@@ -287,6 +293,11 @@ class PlanDocument(Record):
 def check_inventory(node: Node, path: Path) -> Inventory:
     """Check pinned Control observations against declarations; reserve nothing."""
     observed = Inventory.model_validate_json(node.inventory.read(path))
+    return check_resources(node, observed)
+
+
+def check_resources(node: Node, observed: Inventory) -> Inventory:
+    """Apply the same fit rules to a pinned snapshot or a fresh host observation."""
     if (
         observed.node != node.id
         or observed.executable_sha256 != node.layer_binary.sha256

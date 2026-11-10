@@ -2,7 +2,7 @@
 
 ## Current gate status
 
-Verified 10 November 2026 at 06:24 CET, branch `feat/distributed-experts`.
+Verified 10 November 2026 at 07:50 CET, branch `feat/distributed-experts`.
 This table is the authoritative current summary of the
 [E0–E8 acceptance gates](NETWORK_SHARDED_DEEPSEEK_PLAN.md#6-success-gates-and-dependency-order).
 Update it from completed receipts and live process state when a campaign advances.
@@ -16,11 +16,11 @@ entries to locate the original evidence and its limits.
 | E0 — artifacts, machines and budgets | PARTIAL | Both hosts verified all seven pinned files; native model/pack and six-expert identities match. Assigned cut20 fits the tested budgets. Final hardware/multi-pass memory checks remain open. |
 | E1 — expert adapter and Qwen regression | PARTIAL | GPU-resident DeepSeek Q8_K expert parity passed 48 cases in each direction across eight format pairs. Bounded Qwen default/tiered parity passed. Repeated Qwen recovery and the 5% performance-regression gate remain open. |
 | E2 — layer-state replay | PASS, bounded | HIP cuts20/24 passed 128-step exact replay/state checks; assigned-only cut20 replay passed. This is same-backend state evidence, not mixed-backend quality. |
-| E3 — network layer-only inference | PARTIAL | Two mixed-host 128-step probes, EOS, restart, stale-session rejection and exact fresh EOS replay passed. Memory observations stayed within limits; VRAM sampling is not an exact allocator peak. Mixed-host layer loss is queued; the HIP-only loss control passed. |
+| E3 — network layer-only inference | PARTIAL; loss continuation RUNNING | Two mixed-host 128-step probes, EOS, restart and stale-session rejection passed; HIP-only layer loss passed. The first mixed-loss controller failed on a final-poll observer race after valid suffix startup, before prefix execution or fault injection. The corrected `-r2` trial is running with unchanged binaries and acceptance limits. |
 | E4 prerequisite — tiered expert arithmetic | PASS, bounded | Both CUDA-to-HIP and HIP-to-CUDA passed 48 cases across eight format pairs. Each direction executed 256 GPU, 240 RAM and 464 mapped assignments with zero fallbacks. This is expert arithmetic, not combined layer inference. |
 | E4 — hybrid layers plus remote MoE | PARTIAL; static hybrid/expert-loss PASS | Accepted at 06:21 CET, driver exit 0: matched empty ownership is exact; healthy hybrid passes two 128-step probes and EOS, both RPC directions and same-token local GPU/CPU/remote execution. Each expert-process loss visibly recomputes locally and finishes its 128-step request. The separate mixed-host layer-loss contract remains queued under E3. |
-| E5 — numerical and task quality | PREREQUISITE RUNNING; not accepted | Native teacher-forced/reset control started at 06:21 CET. CPU/2K and the fresh five-prompt/1,000-position/eight-task controller remain queued behind it and mixed-host layer loss. All 79 pre-data files matched on both hosts; no held-out model output has been collected. |
-| E6 — network orchestrator | PREPARATION ONLY | Inventory/draft audit, paired window timing, explicit epoch admission and static executable manifest controls passed. No native calibration dataset is accepted. Plans selected from accepted measured costs, held-out ranking and transactional installation remain open. |
+| E5 — numerical and task quality | CPU2 control PASS; corpus QUEUED | Native 128-target capture/reset control passed at 06:58 CET, driver exit 0. CPU8/2K and fresh quality `-r2` continuations are queued behind corrected mixed-host loss. All 106 continuation pre-data files match on both hosts; corpus bytes and thresholds are unchanged. No held-out model output has been collected. |
+| E6 — network orchestrator | PREPARATION ONLY | Static manifest and node-agent controls pass, including durable epoch fences, owned startup/cleanup and preserved native expert tier priority. No DeepSeek model has run through the node agent and no calibration dataset is accepted. The global readiness barrier, measured ranking and transactional coordinator remain open. |
 | E7 — capacity, speed and faults | NOT RUN | Functional/usable C1 and paired speed gates remain open. C2 model-size scaling is a separate follow-up, not an initial 2.00-bpw checkpoint claim. |
 | E8 — reproducible release checkpoint | NOT READY | Required quality, orchestration, capacity/performance and final hardware evidence is incomplete. |
 
@@ -36,8 +36,13 @@ locations are retained in the corresponding historical entries below. `RUNNING`
 means the named campaign was confirmed live at the verification time; `QUEUED`
 is not execution evidence.
 The [fresh E5 fixture](DEEPSEEK_QUALITY.md#fresh-quality-campaign) is pinned in
-`/var/tmp/strata-deepseek-e5-quality-20261110/`; its live controller is waiting
+`/var/tmp/strata-deepseek-e5-quality-20261110-r2/`; its live controller is waiting
 for the upstream native controls rather than collecting fresh outputs.
+The original mixed-loss, CPU8, fresh-quality and HTTP roots retain their exit-1
+records. The startup observer race is reproduced in the corrected mixed-loss
+root's `observer-control.json`; valid native identity was never the failure.
+All four `-r2` controllers are new processes. They preserve all original corpus,
+binary and threshold bytes; dependent launches remain gated on completed passes.
 The [executable manifest tools](NETWORK_FABRIC_PLANS.md) prepare pinned static
 launch bundles. Their synthetic inventory and syntax controls do not qualify
 an actual orchestrator installation or measured placement ranking.
@@ -46,7 +51,7 @@ CPU/admission controls. Its opt-in HTTP adapter has passed synthetic-process
 HTTP/SSE and lifecycle tests. Actual model execution through that new entry
 point remains unqualified; these checks do not advance E3/E4/E5. The
 [native endpoint fixture](DEEPSEEK_LAYER_PROCESS.md#native-endpoint-qualification)
-is sealed on both hosts and its live controller is queued behind successful E5;
+is sealed on both hosts in its `-r2` continuation and queued behind successful E5;
 it has not started a model.
 
 Maintain this table in place. Advance a gate only after checking its completed

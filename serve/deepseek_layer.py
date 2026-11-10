@@ -21,12 +21,12 @@ from serve.frontend import ChatTemplate
 from serve.tokenizer_assets import Digest, Record, TokenizerPins, load_deepseek
 
 
-class PrefixReceipt(Record):
-    """Actual native prefix identity and resolved limits required before HTTP."""
+class LayerReceipt(Record):
+    """Actual native layer-owner identity and role-specific resolved limits."""
 
     arch: Literal["deepseek41"]
     fabric: Annotated[int, Field(ge=1, le=1)]
-    role: Literal["prefix"]
+    role: Literal["prefix", "suffix"]
     context: Annotated[int, Field(ge=2048, le=2048)]
     effective_experts: Annotated[int, Field(ge=6, le=6)]
     arithmetic: Annotated[int, Field(ge=2, le=2)]
@@ -39,16 +39,27 @@ class PrefixReceipt(Record):
     binary_sha256: Digest
     cpu_threads_limit: Annotated[int, Field(ge=1, le=64)]
     expert_vram_mib: Annotated[int, Field(ge=0, le=65536)]
-    request_timeout_ms: Annotated[int, Field(ge=1, le=7200000)]
+    request_timeout_ms: Annotated[int, Field(ge=0, le=7200000)]
     rpc_timeout_ms: Annotated[int, Field(ge=1, le=600000)]
-    idle_timeout_ms: Annotated[int, Field(ge=0, le=0)]
+    idle_timeout_ms: Annotated[int, Field(ge=0, le=7200000)]
 
     @model_validator(mode="after")
     def matching_deadlines(self):
-        """The request allowance must cover the configured layer transaction."""
-        if self.request_timeout_ms < self.rpc_timeout_ms:
-            raise ValueError("request timeout does not cover the layer RPC timeout")
+        """Prefix owns request deadlines; suffix instead owns its accept deadline."""
+        if self.role == "prefix":
+            if self.request_timeout_ms < self.rpc_timeout_ms or self.idle_timeout_ms:
+                raise ValueError(
+                    "prefix request timeout must cover RPC; idle belongs to suffix"
+                )
+        elif self.request_timeout_ms or not self.idle_timeout_ms:
+            raise ValueError("suffix needs an idle timeout and no request timeout")
         return self
+
+
+class PrefixReceipt(LayerReceipt):
+    """The layer receipt admitted by the existing prefix-only HTTP adapter."""
+
+    role: Literal["prefix"]
 
 
 class Launch(Record):
