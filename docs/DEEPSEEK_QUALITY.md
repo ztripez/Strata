@@ -11,6 +11,31 @@ the approved numerical thresholds. `tools/ds4_quality_inputs.py` validates that
 contract. A separate runtime campaign must seal its hash and verify the actual
 model, pack, binary, six-expert arithmetic, resources and delivery receipts.
 
+## Complete numerical corpus
+
+Freeze each first reference's selected continuation and verify the second ordinary
+reference before collecting candidate data, using
+[the reference helper](DEEPSEEK_LAYER_RPC.md#freeze-the-actual-greedy-reference).
+Then score each candidate configuration separately:
+
+```sh
+uv run --no-project --with pydantic==2.14.2 python -m tools.compare_ds4_corpus CORPUS.json INPUT_ROOT FROZEN_ROOT FIRST_REFERENCE_OUT SECOND_REFERENCE_OUT CANDIDATE_OUT NEW_NUMERICAL_REPORT.json
+```
+
+Folders under each root use the frozen logit case ID. The corpus checker rechecks
+every original prompt hash, frozen target count and both references' exact raw
+rows/history. Candidate comparisons use the unchanged baseline targets. All
+recorded rows, including prefill and the final extra row, must be finite and have
+the recorded argmax. Only the declared target positions contribute to KL and
+top-1 acceptance.
+
+Means are weighted by positions, not by prompts. The top-1 predicate compares
+integer counts against the exact decimal threshold. Duplicate prompts cannot
+satisfy the corpus size requirement. A failed numerical threshold writes a failed
+report and exits nonzero; a broken input/reference stops before candidate scoring.
+The report is numerical capture evidence only. Run it for both layer-only and
+hybrid outputs, and retain the separate task and runtime gates.
+
 ## Exact-answer tasks
 
 ```sh
@@ -51,3 +76,8 @@ teacher-forcing refusal and damaged raw rows. The pinned tokenizer also decoded
 the existing ordinary HIP E3 Paris EOS capture correctly. This is a decoder
 control on an excluded fixture. No fresh held-out task run or E5 pass is claimed.
 Receipts are in `/var/tmp/strata-deepseek-task-grader-20261110/`.
+
+Three analytical corpus tests passed. They cover the exact KL/top-1 boundaries,
+unequal prompt lengths, insufficient/duplicate cases and failed references.
+Receipts are in `/var/tmp/strata-deepseek-corpus-scorer-20261110/`. The complete
+fresh numerical corpus has not run to acceptance.
