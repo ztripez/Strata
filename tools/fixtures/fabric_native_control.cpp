@@ -16,6 +16,7 @@ int main(int argc,char **argv) {
     std::map<std::string,std::string> a;
     for(int i=1;i<argc;++i) {
         const std::string key=argv[i];
+        if(key=="--check-config") {std::cout<<"CONFIG_CHECKED syntax_only; model/device/quality NOT VERIFIED\n";return 0;}
         if(key=="--serve" || key=="--verbose") continue;
         if(i+1<argc) a[key]=argv[++i];
     }
@@ -37,11 +38,27 @@ int main(int argc,char **argv) {
             unsigned char hash[SHA256_DIGEST_LENGTH];SHA256(reinterpret_cast<const unsigned char*>(bytes.data()),bytes.size(),hash);
             std::ostringstream hex;for(auto b:hash) hex<<std::hex<<std::setfill('0')<<std::setw(2)<<static_cast<unsigned>(b);
             if(mode!="bad-artifacts") std::cerr<<env("STRATA_FIXTURE_ARTIFACTS");
-            std::cout<<"INFO arch=deepseek41 fabric=1 role=suffix context=2048 effective_experts=6 arithmetic=2 model_sha256="<<a["--model-sha256"]
+            const bool prefix=a["--role"]=="prefix";
+            std::cout<<"INFO arch=deepseek41 fabric=1 role="<<(prefix ? "prefix":"suffix")<<" context=2048 effective_experts=6 arithmetic=2 model_sha256="<<a["--model-sha256"]
                 <<" pack_sha256="<<a["--pack-sha256"]<<" plan_sha256="<<a["--plan-id"]<<" binary_sha256="<<hex.str()
                 <<" plan_epoch="<<(mode=="wrong-epoch" ? "1":a["--plan-epoch"])
                 <<" cpu_threads_limit="<<a["--cpu-threads"]<<" expert_vram_mib="<<a["--expert-vram-mib"]
-                <<" request_timeout_ms=0 rpc_timeout_ms="<<a["--rpc-timeout-ms"]<<" idle_timeout_ms="<<a["--idle-timeout-ms"]<<'\n';
+                <<" request_timeout_ms="<<(prefix ? a["--request-timeout-ms"]:"0")<<" rpc_timeout_ms="<<a["--rpc-timeout-ms"]<<" idle_timeout_ms="<<(prefix ? "0":a["--idle-timeout-ms"])<<'\n';
+            if(prefix) {
+                std::cout<<"READY 2048 stop\n"<<std::flush;
+                std::string line;
+                while(std::getline(std::cin,line)) {
+                    if(line=="QUIT") return 0;
+                    if(!line.starts_with("GEN ")) continue;
+                    std::istringstream command(line);std::string op;int maximum;command>>op>>maximum;
+                    const auto last=line.substr(line.find_last_of(' ')+1);
+                    int prompt=1;for(char ch:last) if(ch==',') ++prompt;
+                    std::istringstream tokens(env("STRATA_FIXTURE_OUTPUT"));int id,count=0;
+                    while(count<maximum && tokens>>id) {std::cout<<"T "<<id<<'\n';++count;}
+                    std::cout<<"DONE "<<count<<' '<<prompt<<" 1.0 2.0 stop 0 0 0 0 0\n"<<std::flush;
+                }
+                return 0;
+            }
             std::cout<<"LAYER_READY endpoint="<<a["--endpoint"]<<" incarnation=1234\n";
         }
     }

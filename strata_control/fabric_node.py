@@ -6,6 +6,7 @@ This node agent never opens the user-facing HTTP endpoint.
 """
 
 import argparse
+import hashlib
 import os
 import queue
 import signal
@@ -124,6 +125,7 @@ def main() -> None:
     """Bind one actual hostname and close all native children on any exit."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--installation", type=Path, required=True)
+    parser.add_argument("--installation-sha256")
     parser.add_argument("--node", required=True)
     parser.add_argument("--evidence-dir", type=Path, required=True)
     parser.add_argument("--state-dir", type=Path, required=True)
@@ -134,7 +136,14 @@ def main() -> None:
 
     for number in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
         signal.signal(number, stop)
-    spec = Installation.model_validate_json(args.installation.read_bytes())
+    raw = args.installation.read_bytes()
+    spec = Installation.model_validate_json(raw)
+    if (
+        args.installation_sha256 is not None
+        and hashlib.sha256(spec.model_dump_json().encode()).hexdigest()
+        != args.installation_sha256
+    ):
+        raise ValueError("staged fabric installation differs from coordinator binding")
     with NodeHost(spec, args.node, args.evidence_dir, args.state_dir) as node:
         control(node)
 

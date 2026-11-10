@@ -93,7 +93,7 @@ uv run --no-project --with pydantic==2.14.2 --with regex==2026.9.10 --with jinja
 
 The output contains the canonical binding, per-node native argv/environment
 records, native expert placement text and the existing
-[prefix HTTP launch binding](DEEPSEEK_LAYER_PROCESS.md#opt-in-http-launch).
+[prefix HTTP launch binding](DEEPSEEK_LAYER_PROCESS.md#opt-in-http-launcher).
 The prefix layer command is inspectable; the eventual installer must launch
 that process through the HTTP adapter, not start a second prefix beside it.
 Worker ownership is installed by the native layer owner's existing expert RPC
@@ -176,8 +176,9 @@ evidence. A failed expert process remains visible in status; it may be handled b
 the plan's existing native local-recomputation policy. A lost stateful layer must
 abort the request. No process is automatically restarted.
 
-This agent never opens HTTP or publishes a whole plan. The two-node coordinator,
-global readiness barrier, drain/reload path, accepted capability/resource evidence
+This agent never opens HTTP or publishes a whole plan. The coordinator below
+owns the global startup barrier and HTTP lifetime. Actual model installation,
+safe reload/quarantine qualification, accepted capability/resource evidence
 and measured placement ranking remain separate requirements. A pinned evidence
 file is not automatically an accepted qualification claim. Kernel-blocked I/O
 can outlive a stop deadline; it needs an explicit failure/quarantine outcome.
@@ -192,4 +193,106 @@ manifest/inventory/HTTP controls passed on each host, with no skips. The argumen
 checks used the actual CUDA/HIP layer executables; model-free lifecycle tests used
 the explicitly synthetic ELF fixture. Receipts are retained in
 `/var/tmp/strata-fabric-node-controls-20261110/`. Native DeepSeek execution and
-whole-plan activation through this agent have not run.
+actual model activation through this agent have not run.
+
+## Two-node coordinator and HTTP publication
+
+`serve.fabric_install` connects the node agents to the existing native prefix
+adapter. Run it in a dedicated Linux process on the prefix owner, using Python
+3.11 or newer. This is an opt-in experimental entry point; the ordinary server
+path and model arithmetic are unchanged.
+
+A strict `CoordinatorSpec` embeds the complete `Installation`, two `AgentRoute`
+records, a fresh absolute `journal_dir`, health polling/deadline bounds and a
+graceful drain bound. Each route specifies its `node`, absolute `python`,
+`repository`, staged `installation`, `evidence_dir` and persistent `state_dir`.
+The prefix route is local. The suffix route additionally requires a numeric
+`ssh_address` and explicit `ssh_host_alias`; `ssh_user` is optional. SSH uses
+batch mode, strict host-key checking and keepalives. It does not fall back to
+another interface, request credentials or restart a failed process.
+
+Stage the same installation binding, source, dependencies and pinned evidence
+on both hosts before starting. The agent verifies a canonical SHA-256 of the
+complete installation object supplied by the coordinator. Equal logical plan
+IDs and epochs do not authorize different path/endpoint bindings. This assumes
+trusted operator-controlled source and routes; it is not a code-distribution
+or remote-attestation system.
+
+Use a persistent interpreter for `AgentRoute.python`, for example a runtime
+project's `.venv/bin/python`. An interpreter printed by `uv run --no-project`
+can disappear when that command exits. The coordinator neither creates that
+runtime nor installs packages on a host. Existing `uv` projects can pin
+`pydantic==2.14.2`, `regex==2026.9.10` and `jinja2==3.1.6` as in the controls.
+
+Construct the strict configuration from the existing binding, then run it:
+
+```python
+from pathlib import Path
+from serve.fabric_install import CoordinatorSpec
+from strata_control.fabric_bundle import Installation
+from strata_control.fabric_client import AgentRoute
+
+binding = Path("/absolute/path/to/installation.json")
+spec = Installation.model_validate_json(binding.read_bytes())
+routes = tuple(
+    AgentRoute(
+        node=node,
+        python=Path("/absolute/path/to/runtime/.venv/bin/python"),
+        repository=Path("/mnt/code/projects/Strata"),
+        installation=binding,
+        evidence_dir=Path("/absolute/path/to/pinned-evidence"),
+        state_dir=Path("/absolute/path/to/persistent-node-state"),
+        # Example: Astor prefix, Lucy suffix. Use the actual suffix's address.
+        ssh_address=None if node == spec.document.plan.prefix.node else "192.168.60.155",
+        ssh_host_alias=None if node == spec.document.plan.prefix.node else "lucy",
+    )
+    for node in (spec.document.plan.prefix.node, spec.document.plan.suffix.node)
+)
+config = CoordinatorSpec(
+    installation=spec, routes=routes,
+    journal_dir=Path("/absolute/path/to/new-installation-journal"),
+)
+with Path("/absolute/path/to/coordinator.json").open("x") as output:
+    output.write(config.model_dump_json(indent=2) + "\n")
+```
+
+```sh
+uv run --no-project --with pydantic==2.14.2 --with regex==2026.9.10 --with jinja2==3.1.6 \
+  python -m serve.fabric_install /absolute/path/to/coordinator.json
+```
+
+Startup follows this order:
+
+1. Both agents verify files/evidence, recheck resources and stage fresh inputs.
+2. Both declared expert workers report actual model identities and listeners.
+3. The suffix reports its actual loaded artifacts, epoch, profile and incarnation.
+4. The existing HTTP adapter loads the prefix and verifies its native READY.
+5. Both workers report installed ownership and bounded native tier allocations.
+6. The coordinator checks all actual process identities/liveness and writes
+   `startup-barrier.json`. Only then does it bind loopback HTTP. Inference stays
+   drained until `published.json` is written.
+
+Startup failure unwinds owned processes without leaving a published endpoint.
+The journal retains replies, stderr and raw process outcomes. Publication-record
+failure closes the bound socket while inference admission is still drained.
+Periodic control health checks do not carry token or expert computation. After
+publication, an expert-process exit remains visible and retains the native
+local-recomputation policy. Agent or layer loss ends this installation; there is
+no automatic layer replay, placement change or replacement process.
+
+Shutdown drains admission, cancels remaining owned calls, closes the prefix,
+then stops both agents. Failures are retained in `coordinator-exit.json` and
+raised after attempting the other cleanups. Its `unconfirmed_nodes` list marks
+agents without an acknowledged stop. An exited SSH process alone does not prove
+remote quiescence. Unreachable hosts or kernel-blocked native I/O still require
+an explicit quarantine/reconciliation policy before safe reload can be qualified.
+There is no automatic reinstall path in this entry point.
+
+The coordinator controls use the synthetic ELF fixture with real agent pipes,
+the existing prefix adapter and loopback HTTP. Synthetic probes replace hardware
+and tokenizer admission; SSH is mapped to local exec in those unit tests.
+Separate real local/10Gb SSH controls check agent status, clean stop and changed
+binding rejection without staging or running a model. These checks do not prove
+DeepSeek execution through the coordinator, accepted resource fit, E5 quality,
+measured placement ranking or full E6 acceptance. Receipts are retained in
+`/var/tmp/strata-fabric-install-controls-20261110/`.

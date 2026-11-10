@@ -2,7 +2,7 @@
 
 ## Current gate status
 
-Verified 10 November 2026 at 08:10 CET, branch `feat/distributed-experts`.
+Verified 10 November 2026 at 08:32 CET, branch `feat/distributed-experts`.
 This table is the authoritative current summary of the
 [E0–E8 acceptance gates](NETWORK_SHARDED_DEEPSEEK_PLAN.md#6-success-gates-and-dependency-order).
 Update it from completed receipts and live process state when a campaign advances.
@@ -16,14 +16,15 @@ entries to locate the original evidence and its limits.
 | E0 — artifacts, machines and budgets | PARTIAL | Seven pinned files and native identities verified on both hosts; cut20 fits tested budgets. Final hardware/multi-pass memory checks remain open. |
 | E1 — expert adapter and Qwen regression | PARTIAL | Bidirectional DeepSeek expert parity and bounded Qwen parity passed. Repeated Qwen recovery and the 5% performance-regression gate remain open. |
 | E2 — layer-state replay | PASS, bounded | HIP cuts20/24 passed 128-step exact replay/state checks, including assigned-only cut20. Mixed-backend quality is separate. |
-| E3 — network layer-only inference | PARTIAL | Mixed-host 128-step probes, EOS, restart and stale-session rejection passed. Corrected mixed-host layer-loss trial `-r2` is RUNNING; no completed receipt yet. |
-| E4 — hybrid layers plus remote MoE | PARTIAL | Tiered arithmetic, static hybrid, exact empty ownership and both expert-loss recoveries passed. Separate mixed-host layer-loss acceptance remains open under E3. |
-| E5 — numerical and task quality | CONTROL PASS; quality QUEUED | CPU2 capture/reset passed. CPU8/2K and fresh quality await E3 loss acceptance. No held-out model output has been collected. |
-| E6 — network orchestrator | PREPARATION ONLY | Static manifest/node-agent controls passed. Actual model installation, global readiness barrier, measured ranking and transactional coordinator remain open. |
+| E3 — network layer-only inference | PASS, functional | Mixed-host 128-step probes, EOS, restart and stale-session rejection passed. Corrected mixed-host layer-loss trial passed at 08:16 CET: clean abort in 3.85 seconds, driver exit 0. E5 quality remains separate. |
+| E4 — hybrid layers plus remote MoE | PASS, bounded | Tiered arithmetic, static hybrid, exact empty ownership and both expert-loss recoveries passed. Separate mixed-host layer clean-abort contract also passed under E3. |
+| E5 — numerical and task quality | CONTROL PASS; quality QUEUED | CPU2 capture/reset passed; CPU8/2K is RUNNING. Fresh quality awaits that control. No held-out model output has been collected. |
+| E6 — network orchestrator | SOFTWARE CONTROLS ONLY | Coordinator startup barrier, rollback and lifecycle controls pass; real SSH status/stop/binding checks pass without model staging. Actual model installation, quarantine/reload qualification and measured ranking remain open. |
 | E7 — capacity, speed and faults | NOT RUN | Functional/usable C1 and paired speed gates remain open. C2 model-size scaling is a separate follow-up. |
 | E8 — reproducible release checkpoint | NOT READY | Quality, orchestration, capacity/performance and final hardware evidence remain incomplete. |
 
-`PASS, bounded` covers only the stated scope. `CONTROL PASS` does not pass the
+`PASS, bounded` and `PASS, functional` cover only the stated scope; neither
+establishes E5 quality. `CONTROL PASS` does not pass the
 enclosing quality gate. `RUNNING` and `QUEUED` are dated activity snapshots,
 not acceptance results. The supporting receipts and campaign details follow.
 
@@ -49,6 +50,15 @@ The CPU2 capture/reset control's `summary.json` and `driver.exit` in
 `/var/tmp/strata-deepseek-e5-native-control-20261110/` record acceptance at
 06:58 CET with exit 0; its 128 targets are excluded from held-out E5 quality.
 
+The mixed-host layer-loss continuation in
+`/var/tmp/strata-deepseek-e3-mixed-loss-20261110-r2/` completed at 08:16 CET.
+Its `summary.json`, raw prefix exit 1, intentionally stopped suffix exit 241
+and driver exit 0 record clean abort in 3.849 seconds, below the frozen 60-second
+bound. Three acknowledged windows through position 46 were retained; the failed
+request was not replayed. All 16 sealed input hashes still match on both hosts.
+The CPU8/2K controller started its native reference after that acceptance and
+remains live, without a completed receipt.
+
 The [fresh E5 fixture](DEEPSEEK_QUALITY.md#fresh-quality-campaign) is pinned in
 `/var/tmp/strata-deepseek-e5-quality-20261110-r2/`; its live controller is waiting
 for the upstream native controls rather than collecting fresh outputs.
@@ -59,9 +69,15 @@ That failure occurred before prefix execution or fault injection. Its corrected
 trial retains the original binaries and acceptance limits.
 All four `-r2` controllers are new processes. They preserve all original corpus,
 binary and threshold bytes; dependent launches remain gated on completed passes.
-The [executable manifest tools](NETWORK_FABRIC_PLANS.md) prepare pinned static
-launch bundles. Their synthetic inventory and syntax controls do not qualify
-an actual orchestrator installation or measured placement ranking.
+The [executable manifest and coordinator tools](NETWORK_FABRIC_PLANS.md) now
+connect pinned static plans, owned agents and the existing HTTP adapter. All 56
+focused controls passed on each host with no skips, including actual CUDA/HIP
+syntax-only checks. Synthetic ELF/HTTP controls cover the global startup barrier,
+rollback, expert-loss policy, layer-loss shutdown and failed receipt writes.
+Real local/10Gb SSH agent status, clean stop and binding-refusal controls also
+passed without staging or running a model. Receipts are retained in
+`/var/tmp/strata-fabric-install-controls-20261110/`. These checks do not qualify
+an actual DeepSeek installation, safe quarantine/reload or measured ranking.
 The [persistent native process](DEEPSEEK_LAYER_PROCESS.md) has passed builds and
 CPU/admission controls. Its opt-in HTTP adapter has passed synthetic-process
 HTTP/SSE and lifecycle tests. Actual model execution through that new entry
