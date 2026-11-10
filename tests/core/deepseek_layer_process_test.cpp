@@ -21,6 +21,16 @@ void configuration() {
     const auto original=arguments();const auto config=N::configuration(original);
     N::require(config.role=="prefix" && config.cpu_threads==8 && config.expert_vram_mib==384 && config.cut==20,"valid configuration changed");
     N::require(!config.trace_windows,"window tracing changed the default profile");
+    N::require(!config.plan_epoch,"static caller acquired an explicit plan epoch");
+    for(const auto &epoch:{"1","42","18446744073709551615"}) {
+        auto changed=original;changed.insert(changed.end(),{"--plan-epoch",epoch});
+        N::require(N::configuration(changed).plan_epoch==N::integer(epoch,UINT64_MAX),"explicit epoch changed");
+        changed.insert(changed.end(),{"--plan-epoch",epoch});refused([&]{N::configuration(changed);});
+    }
+    for(const auto &epoch:{"0","-1","+1","1.0","1x","18446744073709551616",""}) {
+        auto changed=original;changed.insert(changed.end(),{"--plan-epoch",epoch});refused([&]{N::configuration(changed);});
+    }
+    auto incomplete=original;incomplete.push_back("--plan-epoch");refused([&]{N::configuration(incomplete);});
     auto traced=original;traced.push_back("--trace-windows");
     N::require(N::configuration(traced).trace_windows,"opt-in window tracing refused");
     traced.push_back("--trace-windows");refused([&]{N::configuration(traced);});
@@ -41,6 +51,8 @@ void configuration() {
     auto peer=std::find(suffix.begin(),suffix.end(),"--peer-binary-sha256");suffix.erase(peer,peer+2);suffix.insert(suffix.end(),{"--idle-timeout-ms","7200000"});
     auto timeout=std::find(suffix.begin(),suffix.end(),"--request-timeout-ms");suffix.erase(timeout,timeout+2);
     N::require(N::configuration(suffix).role=="suffix","valid suffix refused");
+    suffix.insert(suffix.end(),{"--plan-epoch","42"});
+    N::require(N::configuration(suffix).plan_epoch==42,"suffix epoch refused");
     suffix.push_back("--check-config");N::require(N::configuration(suffix).check_only,"syntax-check mode missing");
 }
 void trace_output() {

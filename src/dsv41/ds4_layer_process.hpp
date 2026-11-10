@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdint>
 #include <map>
+#include <optional>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -45,11 +46,14 @@ struct ProcessConfig {
     Digest model{},pack_identity{},plan{},peer_binary{};
     int cut=0,cpu_threads=0,rpc_ms=0,idle_ms=0,expert_rpc_ms=0,request_ms=0;
     int64_t expert_vram_mib=0;
+    // Omitted only by the existing static epoch-1 callers. An installer must
+    // supply an epoch explicitly; no missing runtime receipt attests one.
+    std::optional<uint64_t> plan_epoch;
     bool check_only=false,trace_windows=false;
 };
 inline ProcessConfig configuration(const std::vector<std::string> &arguments) {
     std::map<std::string,std::string> values;bool serving=false,checking=false,tracing=false;
-    const std::set<std::string> flags{"--role","--pack","--cut","--endpoint","--model-sha256","--pack-sha256","--plan-id","--peer-binary-sha256","--experts","--expert-vram-mib","--cpu-threads","--rpc-timeout-ms","--idle-timeout-ms","--request-timeout-ms","--expert-worker","--expert-worker-model","--expert-worker-placement","--expert-worker-timeout-ms"};
+    const std::set<std::string> flags{"--role","--pack","--cut","--endpoint","--model-sha256","--pack-sha256","--plan-id","--plan-epoch","--peer-binary-sha256","--experts","--expert-vram-mib","--cpu-threads","--rpc-timeout-ms","--idle-timeout-ms","--request-timeout-ms","--expert-worker","--expert-worker-model","--expert-worker-placement","--expert-worker-timeout-ms"};
     for(size_t i=0;i<arguments.size();++i) {
         const auto &flag=arguments[i];
         if(flag=="--serve") {require(!serving,"duplicate --serve");serving=true;continue;}
@@ -63,6 +67,10 @@ inline ProcessConfig configuration(const std::vector<std::string> &arguments) {
     ProcessConfig c;c.role=take("--role");require(c.role=="prefix" || c.role=="suffix","layer role must be prefix or suffix");
     c.pack=take("--pack");c.address=take("--endpoint");endpoint(c.address);
     c.model=unhex(take("--model-sha256"));c.pack_identity=unhex(take("--pack-sha256"));c.plan=unhex(take("--plan-id"));
+    if(values.contains("--plan-epoch")) {
+        c.plan_epoch=integer(take("--plan-epoch"),UINT64_MAX);
+        require(*c.plan_epoch>0,"plan epoch must be positive");
+    }
     require(take("--experts")=="6","layer process requires explicit --experts 6");
     c.cut=static_cast<int>(integer(take("--cut"),24));require(c.cut==20 || c.cut==24,"layer cut must be 20 or 24");
     c.cpu_threads=static_cast<int>(integer(take("--cpu-threads"),64));require(c.cpu_threads>0,"CPU thread limit must be positive");

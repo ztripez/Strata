@@ -62,10 +62,14 @@ class LayerHttpTests(unittest.TestCase):
             idle_timeout_ms=0,
         )
 
-    def binding(self, wrong_plan=False, delay_ready=False, fail_start=False):
+    def binding(
+        self, wrong_plan=False, delay_ready=False, fail_start=False, epoch=None
+    ):
         """Create a pinned synthetic stdio peer with known token output and INFO."""
-        info = self.expected.model_dump()
+        info = self.expected.model_dump(exclude_none=True)
         info.pop("binary_sha256")
+        if epoch is not None:
+            info["plan_epoch"] = epoch
         if wrong_plan:
             info["plan_sha256"] = "e" * 64
         response = self.tok.encode("OK", parse_special=True) + [1]
@@ -95,6 +99,7 @@ for line in sys.stdin:
         expected = fabric.PrefixReceipt.model_validate(
             {
                 **self.expected.model_dump(),
+                "plan_epoch": epoch,
                 "binary_sha256": hashlib.sha256(
                     self.executable.read_bytes()
                 ).hexdigest(),
@@ -138,7 +143,8 @@ for line in sys.stdin:
                 "1000",
                 "--request-timeout-ms",
                 "30000",
-            ],
+            ]
+            + ([] if epoch is None else ["--plan-epoch", str(epoch)]),
             expected=expected,
             tokenizer_dir=self.assets,
             tokenizer=pins,
@@ -249,6 +255,65 @@ for line in sys.stdin:
             fabric.create_service(spec)
         self.assertFalse((Path("/proc") / self.pid.read_text()).exists())
 
+    def test_explicit_epoch_requires_actual_native_receipt(self):
+        spec = self.binding(epoch=2**64 - 1)
+        svc = self.service(spec)
+        self.assertEqual(svc.engine.info["plan_epoch"], 2**64 - 1)
+
+    def test_explicit_epoch_refuses_missing_runtime_epoch(self):
+        spec = self.binding()
+        explicit = fabric.Launch.model_validate(
+            {
+                **spec.model_dump(),
+                "native_args": [*spec.native_args, "--plan-epoch", "42"],
+                "expected": {**spec.expected.model_dump(), "plan_epoch": 42},
+            }
+        )
+        with (
+            mock.patch.object(fabric, "load_deepseek", return_value=self.tok),
+            self.assertRaisesRegex(ValueError, "differ from pinned launch"),
+        ):
+            fabric.create_service(explicit)
+        self.assertFalse((Path("/proc") / self.pid.read_text()).exists())
+
+    def test_explicit_epoch_refuses_other_runtime_epoch(self):
+        spec = self.binding(epoch=41)
+        changed = fabric.Launch.model_validate(
+            {
+                **spec.model_dump(),
+                "native_args": [*spec.native_args[:-1], "42"],
+                "expected": {**spec.expected.model_dump(), "plan_epoch": 42},
+            }
+        )
+        with (
+            mock.patch.object(fabric, "load_deepseek", return_value=self.tok),
+            self.assertRaisesRegex(ValueError, "differ from pinned launch"),
+        ):
+            fabric.create_service(changed)
+        self.assertFalse((Path("/proc") / self.pid.read_text()).exists())
+
+    def test_epoch_argv_and_expected_receipt_must_agree_before_start(self):
+        spec = self.binding(epoch=42)
+        for args, epoch in (
+            (spec.native_args, None),
+            (spec.native_args, 43),
+            (spec.native_args[:-2], 42),
+            (spec.native_args[:-1], 42),
+            ([*spec.native_args, "--plan-epoch", "42"], 42),
+        ):
+            with (
+                self.subTest(args=args, epoch=epoch),
+                self.assertRaises(ValidationError),
+            ):
+                fabric.Launch.model_validate(
+                    {
+                        **spec.model_dump(),
+                        "native_args": args,
+                        "expected": {**spec.expected.model_dump(), "plan_epoch": epoch},
+                    }
+                )
+        self.assertFalse(self.pid.exists())
+
     def test_failed_start_never_uses_shared_transient_retry(self):
         spec = self.binding(fail_start=True)
         with (
@@ -352,6 +417,11 @@ for line in sys.stdin:
             {"context": 4096},
             {"effective_experts": 5},
             {"request_timeout_ms": 999},
+            {"plan_epoch": 0},
+            {"plan_epoch": -1},
+            {"plan_epoch": True},
+            {"plan_epoch": "42"},
+            {"plan_epoch": 2**64},
         ):
             with self.subTest(change=change), self.assertRaises(ValidationError):
                 fabric.PrefixReceipt.model_validate(

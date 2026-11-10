@@ -2,12 +2,14 @@
 
 ## Current gate status
 
-Verified 10 November 2026 at 05:40 CET, branch `feat/distributed-experts`.
+Verified 10 November 2026 at 06:04 CET, branch `feat/distributed-experts`.
 This table is the authoritative current summary of the
 [E0–E8 acceptance gates](NETWORK_SHARDED_DEEPSEEK_PLAN.md#6-success-gates-and-dependency-order).
 Update it from completed receipts and live process state when a campaign advances.
 Historical statements below do not override it. A bounded pass is not full-model
 quality, capacity, performance or release acceptance.
+For implementation and rerun decisions, use this table first; use the historical
+entries to locate the original evidence and its limits.
 
 | Gate | Current status | Verified scope and remaining work |
 | --- | --- | --- |
@@ -16,9 +18,9 @@ quality, capacity, performance or release acceptance.
 | E2 — layer-state replay | PASS, bounded | HIP cuts20/24 passed 128-step exact replay/state checks; assigned-only cut20 replay passed. This is same-backend state evidence, not mixed-backend quality. |
 | E3 — network layer-only inference | PARTIAL | Two mixed-host 128-step probes, EOS, restart, stale-session rejection and exact fresh EOS replay passed. Memory observations stayed within limits; VRAM sampling is not an exact allocator peak. Mixed-host layer loss is queued; the HIP-only loss control passed. |
 | E4 prerequisite — tiered expert arithmetic | PASS, bounded | Both CUDA-to-HIP and HIP-to-CUDA passed 48 cases across eight format pairs. Each direction executed 256 GPU, 240 RAM and 464 mapped assignments with zero fallbacks. This is expert arithmetic, not combined layer inference. |
-| E4 — hybrid layers plus remote MoE | RUNNING | Layer-only and empty-ownership controls each passed two 128-step probes and EOS; the empty control was accepted at 04:34 CET. Both real-ownership expert workers are ready; CUDA suffix verified at 05:25 CET and HIP prefix is starting. Combined remote inference, same-token three-tier coverage and expert-loss fallback have not passed. |
+| E4 — hybrid layers plus remote MoE | RUNNING | Layer-only and empty-ownership controls each passed two 128-step probes and EOS; the empty control was accepted at 04:34 CET. HIP prefix identity verified at 06:00 CET; real hybrid expert traffic is observed in both directions. Complete combined trajectories, same-token three-tier coverage and expert-loss fallback have not passed. |
 | E5 — numerical and task quality | QUEUED, not accepted | Native teacher-forced/reset and CPU/2K controls are queued. The fresh five-prompt/1,000-position/eight-task controller is also queued behind those prerequisites. All 79 pre-data files match on both hosts; no held-out model output has been collected. |
-| E6 — network orchestrator | PREPARATION ONLY | Inventory/draft audit and opt-in paired window-timing controls passed. No native calibration dataset is accepted. Measured per-layer/worker-tier costs, held-out ranking, deterministic executable plans and transactional installation remain open. |
+| E6 — network orchestrator | PREPARATION ONLY | Inventory/draft audit, opt-in paired window timing and explicit installation-epoch admission controls passed. No native calibration dataset is accepted. Measured per-layer/worker-tier costs, held-out ranking, deterministic executable plans and transactional installation remain open. |
 | E7 — capacity, speed and faults | NOT RUN | Functional/usable C1 and paired speed gates remain open. C2 model-size scaling is a separate follow-up, not an initial 2.00-bpw checkpoint claim. |
 | E8 — reproducible release checkpoint | NOT READY | Required quality, orchestration, capacity/performance and final hardware evidence is incomplete. |
 
@@ -26,11 +28,11 @@ Current evidence includes the completed mixed-host and fixed-budget
 `summary.json` files. The tiered result is recorded in
 `/var/tmp/strata-deepseek-tiered-worker-20261109/summary.json` with driver exit 0
 at 01:59 CET. The active combined campaign is
-`/var/tmp/strata-deepseek-e4-static-20261110-idle2h/`; its `phases.log` and native
-process confirm startup, not acceptance. Other receipt locations are retained
-in the corresponding historical entries below. `RUNNING` means the named
-campaign was confirmed live at the verification time; `QUEUED` is not execution
-evidence.
+`/var/tmp/strata-deepseek-e4-static-20261110-idle2h/`; its `phases.log`, native
+processes and worker logs confirm execution, not acceptance. Other receipt
+locations are retained in the corresponding historical entries below. `RUNNING`
+means the named campaign was confirmed live at the verification time; `QUEUED`
+is not execution evidence.
 The [fresh E5 fixture](DEEPSEEK_QUALITY.md#fresh-quality-campaign) is pinned in
 `/var/tmp/strata-deepseek-e5-quality-20261110/`; its live controller is waiting
 for the upstream native controls rather than collecting fresh outputs.

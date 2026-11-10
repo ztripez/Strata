@@ -33,6 +33,9 @@ class PrefixReceipt(Record):
     model_sha256: Digest
     pack_sha256: Digest
     plan_sha256: Digest
+    # The sealed static callers predate explicit epochs. Missing INFO stays
+    # unknown; an installer must bind and observe a positive epoch.
+    plan_epoch: Annotated[int, Field(ge=1, le=2**64 - 1)] | None = None
     binary_sha256: Digest
     cpu_threads_limit: Annotated[int, Field(ge=1, le=64)]
     expert_vram_mib: Annotated[int, Field(ge=0, le=65536)]
@@ -88,6 +91,22 @@ class Launch(Record):
                 "native_args must omit injected --serve and check-only mode"
             )
         return value
+
+    @model_validator(mode="after")
+    def matching_epoch_argument(self):
+        """An explicit epoch is bound in both argv and the actual INFO receipt."""
+        args, epoch = self.native_args, self.expected.plan_epoch
+        count = args.count("--plan-epoch")
+        if epoch is None:
+            if count:
+                raise ValueError("explicit plan epoch requires an expected receipt")
+            return self
+        if count != 1:
+            raise ValueError("expected plan epoch must match one --plan-epoch value")
+        index = args.index("--plan-epoch")
+        if args[index + 1 : index + 2] != [str(epoch)]:
+            raise ValueError("expected plan epoch must match one --plan-epoch value")
+        return self
 
 
 class Greedy(Record):

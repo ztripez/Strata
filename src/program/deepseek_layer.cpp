@@ -52,7 +52,7 @@ DeepSeekLayerContract contract(Model &model,const N::ProcessConfig &c) {
     DeepSeekLayerContract result;std::string error;
     N::require(model.boundary_artifacts(result.identity.model,result.identity.pack,error),error);
     N::require(result.identity.model==c.model && result.identity.pack==c.pack_identity,"actual mapped model/pack differs from installed plan");
-    result.identity.plan=c.plan;result.identity.epoch=1;result.identity.next_layer=static_cast<uint32_t>(c.cut);
+    result.identity.plan=c.plan;result.identity.epoch=c.plan_epoch.value_or(1);result.identity.next_layer=static_cast<uint32_t>(c.cut);
     result.effective_experts=6;result.arithmetic=static_cast<uint32_t>(ExpertWorkerArithmetic::DEEPSEEK_IQ_Q8K);
     auto initial=result.identity;initial.session=1;
     std::function<bool(const DeepSeekLayerBoundary&,std::string&)> observer;
@@ -63,6 +63,7 @@ DeepSeekLayerContract contract(Model &model,const N::ProcessConfig &c) {
 void info(const N::ProcessConfig &c,const N::Digest &binary) {
     std::printf("INFO engine=deepseek-layer arch=deepseek41 version=%s fabric=1 role=%s context=%d effective_experts=6 arithmetic=2 model_sha256=%s pack_sha256=%s plan_sha256=%s binary_sha256=%s cpu_threads_limit=%d expert_vram_mib=%lld request_timeout_ms=%d rpc_timeout_ms=%d idle_timeout_ms=%d\n",
         STRATA_VERSION,c.role.c_str(),N::context,N::hex(c.model).c_str(),N::hex(c.pack_identity).c_str(),N::hex(c.plan).c_str(),N::hex(binary).c_str(),c.cpu_threads,static_cast<long long>(c.expert_vram_mib),c.request_ms,c.rpc_ms,c.idle_ms);
+    if(c.plan_epoch) std::printf("INFO plan_epoch=%llu\n",static_cast<unsigned long long>(*c.plan_epoch));
     if(c.trace_windows) std::puts("INFO window_trace=1");
     std::fflush(stdout);
 }

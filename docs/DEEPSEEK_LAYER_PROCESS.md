@@ -27,7 +27,7 @@ sequence, greedy decoding, a 2,048-token context, synchronous windows, six route
 experts, no vision/DSpark and no primary expert cache/RAM store. File-backed CPU
 experts and fixed native GPU expert placement use the existing Model paths.
 
-Every launch must supply these options:
+The launch options are:
 
 | Option | Meaning |
 | --- | --- |
@@ -39,6 +39,7 @@ Every launch must supply these options:
 | `--model-sha256 HASH` | Expected DS4M1 identity of all six actual mapped files. |
 | `--pack-sha256 HASH` | Expected canonical DS4P1 execution-pack identity. |
 | `--plan-id HASH` | Shared nonzero plan identity supplied by the sealed experiment or installer. |
+| `--plan-epoch N` | Installer-supplied positive 64-bit installation epoch, identical on both layer owners. Existing static callers that omit it retain epoch 1. |
 | `--experts 6` | Explicit routing setting; native boundary setup checks every layer's effective count. |
 | `--expert-vram-mib N` | Fixed expert arena budget, `0..65536` MiB. This is not a cap on dense weights or total device use. Infeasible allocation fails at load. |
 | `--cpu-threads N` | Native CPU pool limit, `1..64`, not a reservation. Actual pool size is reported by Model startup. |
@@ -67,6 +68,15 @@ running executable. Prefix additionally discovers and pins the suffix's actual
 contract and executable. INFO reports actual artifact/binary identities and
 resolved limits. A suffix publishes `LAYER_READY`; a prefix publishes
 `READY 2048 stop` for the existing server's stdio engine interface.
+
+An explicit `--plan-epoch` sets the native DS4L contract and every boundary's
+epoch. Discovery rejects a peer with a different epoch before native execution.
+INFO reports `plan_epoch=N` when explicitly supplied. An installer must supply
+and verify it; missing INFO is unknown, never evidence of epoch 1. Plan content
+identity, installation epoch and the suffix's process incarnation are separate
+fences. This option alone does not provide transactional installation or choose
+the next epoch. The existing sealed static fixtures keep their original binaries
+and epoch-1 contracts.
 
 ## Request and failure behavior
 
@@ -147,6 +157,12 @@ It prevents the ordinary server's leftover-process cleanup and automatic engine
 retry/reload for this dedicated fabric process. A failed prefix needs an explicit
 fresh start; a partial generation is not replayed.
 
+For an explicit epoch, include both `--plan-epoch`, `N` in `native_args` and
+`"plan_epoch": N` in `expected`. The launcher rejects missing, duplicate or
+conflicting bindings before starting the native process. It then requires the
+actual INFO epoch to match before HTTP can open. Static bindings may omit both;
+they do not attest an explicit installation epoch.
+
 The existing `/v1/chat/completions` endpoint supports ordinary and streaming text
 responses here. Defaults are greedy. Unsupported sampling, logprobs, checkpoint,
 image and tuning controls are refused before a native GEN write. Prompt plus
@@ -185,6 +201,13 @@ tokenizer test passed separately with the pinned real assets. The common loader
 also decoded an existing excluded native EOS capture correctly, and all 79 E5
 pre-data files retained their sealed hashes. These checks do not run a native
 model through HTTP or qualify native cancellation, E5 quality or E6 installation.
+
+Explicit installation-epoch controls are retained separately in
+`/var/tmp/strata-deepseek-plan-epoch-20261110/`. CUDA and HIP builds passed;
+13 HTTP/stdio tests passed on each host, including rejection of missing and
+conflicting actual epochs. Sixteen native syntax/pre-device cases passed per
+host, alongside the process-input and TCP contract suites. These checks do not
+execute a model with a new epoch or implement transactional plan installation.
 
 ## Native endpoint qualification
 
