@@ -43,6 +43,7 @@ Every launch must supply these options:
 | `--expert-vram-mib N` | Fixed expert arena budget, `0..65536` MiB. This is not a cap on dense weights or total device use. Infeasible allocation fails at load. |
 | `--cpu-threads N` | Native CPU pool limit, `1..64`, not a reservation. Actual pool size is reported by Model startup. |
 | `--rpc-timeout-ms N` | One layer transaction's bound, `1..600000` ms. |
+| `--trace-windows` | Optional paired window/transaction timing on stderr; default off. Does not select a placement or qualify its cost. |
 
 Prefix also requires `--peer-binary-sha256 HASH` and
 `--request-timeout-ms N`. The request bound must cover at least one RPC timeout
@@ -155,6 +156,11 @@ existing bounded STOP/QUIT, terminate and kill sequence. Remote layer/expert
 processes remain the external controller's responsibility.
 
 ## Verification scope
+
+The opt-in [window-observation reader](NETWORK_FABRIC_INVENTORY.md#native-window-observations)
+pairs native timing records by actual identity, incarnation and window. These
+records are preparation for measured placement costs. Transaction time already
+includes remote computation. No native calibration dataset has been accepted yet.
 
 On 10 November 2026, CUDA and HIP builds passed. CPU configuration, request,
 STOP/reset, callback-lifetime, input-bound and deadline checks passed on Lucy

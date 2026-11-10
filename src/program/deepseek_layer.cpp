@@ -2,6 +2,7 @@
 // remain in strata::ds4::Model; this file owns framing, request lifetime and I/O.
 #include "ds4_layer_process.hpp"
 #include "ds4_layer_input.hpp"
+#include "ds4_layer_trace.hpp"
 #include "ds4_model.hpp"
 #include "ds4_gguf.cuh"
 #include "strata/core/deepseek_layer_rpc.hpp"
@@ -22,6 +23,9 @@ using strata::ds4::Model;
 using namespace strata::core;
 namespace {
 using Clock=std::chrono::steady_clock;
+uint64_t microseconds(Clock::time_point start,Clock::time_point end) {
+    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(end-start).count());
+}
 struct Socket {
     int fd=-1;
     explicit Socket(int value):fd(value) {}
@@ -59,6 +63,7 @@ DeepSeekLayerContract contract(Model &model,const N::ProcessConfig &c) {
 void info(const N::ProcessConfig &c,const N::Digest &binary) {
     std::printf("INFO engine=deepseek-layer arch=deepseek41 version=%s fabric=1 role=%s context=%d effective_experts=6 arithmetic=2 model_sha256=%s pack_sha256=%s plan_sha256=%s binary_sha256=%s cpu_threads_limit=%d expert_vram_mib=%lld request_timeout_ms=%d rpc_timeout_ms=%d idle_timeout_ms=%d\n",
         STRATA_VERSION,c.role.c_str(),N::context,N::hex(c.model).c_str(),N::hex(c.pack_identity).c_str(),N::hex(c.plan).c_str(),N::hex(binary).c_str(),c.cpu_threads,static_cast<long long>(c.expert_vram_mib),c.request_ms,c.rpc_ms,c.idle_ms);
+    if(c.trace_windows) std::puts("INFO window_trace=1");
     std::fflush(stdout);
 }
 int suffix(Model &model,const N::ProcessConfig &c,const DeepSeekLayerContract &installed,const N::Digest &binary) {
@@ -73,7 +78,7 @@ int suffix(Model &model,const N::ProcessConfig &c,const DeepSeekLayerContract &i
     DeepSeekLayerService service(caps,[&](const auto &identity,std::string &error) {
         native_failed=true;model.reset();const bool ok=model.configure_boundary_probe(c.cut,identity,{},error);native_failed=!ok;return ok;
     },[&](const auto &capture,uint32_t rows,DeepSeekLayerResult &result,std::string &error) {
-        const auto deadline=Clock::now()+std::chrono::milliseconds(c.rpc_ms);
+        const auto started=Clock::now();const auto deadline=started+std::chrono::milliseconds(c.rpc_ms);
         model.set_cancel([deadline]{return Clock::now()>=deadline;});
         bool ok=false;
         try {ok=model.replay_boundary(capture,static_cast<int>(rows),error);}
@@ -81,6 +86,10 @@ int suffix(Model &model,const N::ProcessConfig &c,const DeepSeekLayerContract &i
         model.set_cancel({});
         if(!ok || Clock::now()>=deadline) {native_failed=true;if(error.empty()) error="native layer computation deadline exceeded";return false;}
         if(!model.logits(result.logits)) {native_failed=true;error="native suffix did not publish logits";return false;}
+        if(c.trace_windows) {
+            try {N::suffix_window_trace(stderr,c,binary,capture.header,caps.incarnation,microseconds(started,Clock::now()));}
+            catch(...) {native_failed=true;throw;}
+        }
         result.request=capture.header;result.logits_rows=rows;result.committed_position=static_cast<uint64_t>(model.pos());return true;
     });
     std::string host,error;uint16_t port=0,bound=0;
@@ -105,9 +114,11 @@ struct Reset {
     ~Reset() {model.set_cancel({});model.reset();}
 };
 struct Generation {int count=0;double prompt_ms=0,decode_ms=0;std::string finish="length";};
-Generation generate(Model &model,const N::ProcessConfig &c,const DeepSeekLayerContract &installed,N::CommandInput &input,const N::Request &request,uint64_t &floor) {
+Generation generate(Model &model,const N::ProcessConfig &c,const DeepSeekLayerContract &installed,const N::Digest &binary,N::CommandInput &input,const N::Request &request,uint64_t &floor) {
     Generation output;const auto start=Clock::now();auto decode=start;
     DeepSeekLayerClient client;DeepSeekLayerResult last;
+    Clock::time_point feed_started,callback_started,callback_ended;
+    int callbacks=0;DeepSeekLayerTiming transaction;
     N::InputBinding binding(input,[&]{client.interrupt();});Reset reset{model};std::string error;
     auto check_cancel=[&] {if(!input.failure().empty()) throw std::runtime_error(input.failure());if(input.cancelled()) throw Cancelled{};};
     try {
@@ -115,14 +126,33 @@ Generation generate(Model &model,const N::ProcessConfig &c,const DeepSeekLayerCo
         floor=std::max(floor,client.capabilities().last_session);N::require(floor<std::numeric_limits<uint64_t>::max()-1,"layer session IDs exhausted");
         auto identity=installed.identity;identity.session=++floor;
         N::require(client.begin(floor,error),error);check_cancel();
-        model.reset();N::require(model.configure_boundary_probe(c.cut,identity,[&](const auto &capture,std::string &why){return client.execute(capture,1,last,why);},error),error);
+        model.reset();N::require(model.configure_boundary_probe(c.cut,identity,[&](const auto &capture,std::string &why) {
+            if(c.trace_windows) {callback_started=Clock::now();++callbacks;}
+            const bool ok=client.execute(capture,1,last,why,c.trace_windows ? &transaction:nullptr);
+            if(c.trace_windows) callback_ended=Clock::now();
+            return ok;
+        },error),error);
         model.set_cancel([&]{return input.cancelled();});
         auto advance=[&](const int *ids,int count) {
-            check_cancel();const bool ok=model.feed(ids,count,0,error);
+            check_cancel();
+            if(c.trace_windows) {feed_started=Clock::now();callbacks=0;}
+            const bool ok=model.feed(ids,count,0,error);
+            Clock::time_point feed_ended;
+            if(c.trace_windows) feed_ended=Clock::now();
             if(!ok && input.cancelled() && (model.cancelled() || error.find("layer channel interrupted:")!=std::string::npos)) throw Cancelled{};
             N::require(ok,error);check_cancel();
             N::require(last.committed_position==static_cast<uint64_t>(model.pos()) && last.logits.size()==N::vocabulary,"acknowledged layer position/logits differ");
             N::require(std::all_of(last.logits.begin(),last.logits.end(),[](float value){return std::isfinite(value);}),"nonfinite acknowledged logits");
+            if(c.trace_windows) {
+                N::require(callbacks==1,"window trace requires exactly one acknowledged boundary per feed");
+                N::PrefixWindowTiming measured;
+                measured.feed_us=microseconds(feed_started,feed_ended);
+                measured.before_rpc_us=microseconds(feed_started,callback_started);
+                measured.rpc_us=microseconds(callback_started,callback_ended);
+                measured.after_rpc_us=microseconds(callback_ended,feed_ended);
+                measured.transaction=transaction;
+                N::prefix_window_trace(stderr,c,binary,last.request,client.capabilities().incarnation,measured);
+            }
             return static_cast<int>(std::max_element(last.logits.begin(),last.logits.end())-last.logits.begin());
         };
         int next=-1;
@@ -155,7 +185,7 @@ int prefix(Model &model,const N::ProcessConfig &c,const DeepSeekLayerContract &i
         N::Request request;
         try {request=N::request(line);} catch(const std::exception &error) {input.finish();std::printf("ERR %s\n",error.what());std::fflush(stdout);continue;}
         Generation output;
-        try {output=generate(model,c,installed,input,request,floor);} catch(...) {input.finish();throw;}
+        try {output=generate(model,c,installed,binary,input,request,floor);} catch(...) {input.finish();throw;}
         N::require(input.failure().empty(),input.failure());input.finish();
         std::printf("DONE %d %zu %.1f %.1f %s 0 0 0 0 0\n",output.count,request.tokens.size(),output.prompt_ms,output.decode_ms,output.finish.c_str());std::fflush(stdout);
     }

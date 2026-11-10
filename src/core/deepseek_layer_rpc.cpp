@@ -261,23 +261,43 @@ bool DeepSeekLayerClient::begin(uint64_t id,std::string &error) {
         capabilities_=std::move(ready);session_=identity;begun_=true;return true;
     } catch(const std::exception &e) {return fail(e.what(),error);}
 }
-bool DeepSeekLayerClient::execute(const DeepSeekLayerBoundary &capture,uint32_t rows,DeepSeekLayerResult &result,std::string &error) {
+bool DeepSeekLayerClient::execute(const DeepSeekLayerBoundary &capture,uint32_t rows,DeepSeekLayerResult &result,std::string &error,DeepSeekLayerTiming *timing) {
     if(fd_<0 || !begun_) return fail("layer session is not READY",error);
     try {
-        const auto deadline=Clock::now()+std::chrono::milliseconds(timeout_ms_);
+        const auto started=Clock::now();
+        const auto deadline=started+std::chrono::milliseconds(timeout_ms_);
+        DeepSeekLayerTiming measured;
+        auto elapsed=[](Clock::time_point begin,Clock::time_point end) {
+            return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(end-begin).count());
+        };
         auto identity=session_;identity.position=capture.header.position;identity.sequence=capture.header.sequence;identity.rows=capture.header.rows;
         D::require(D::equal(identity,capture.header),"capture does not belong to this layer session");
         D::require(rows && rows<=capture.header.rows,"invalid requested layer logit rows");
         ExpertWireWriter w;w.put(rows);auto bytes=encode_deepseek_boundary(capabilities_.contract.layout,capture);
         w.bytes.insert(w.bytes.end(),bytes.begin(),bytes.end());
         std::vector<uint8_t> reply;
+        Clock::time_point execute_started;
+        if(timing) execute_started=Clock::now();
         if(!exchange(R::Type::execute,w.bytes,R::Type::result,reply,deadline,error)) return false;
+        if(timing) {
+            measured.execute_us=elapsed(execute_started,Clock::now());
+            measured.tx_bytes=24+w.bytes.size();measured.rx_bytes=24+reply.size();
+        }
         auto decoded=decode_deepseek_layer_result(capabilities_.contract.layout,capture.header,rows,reply);
-        if(!exchange(R::Type::acknowledge,header_bytes(capture.header),R::Type::acknowledged,reply,deadline,error)) return false;
+        auto acknowledgement=header_bytes(capture.header);
+        Clock::time_point ack_started;
+        if(timing) ack_started=Clock::now();
+        if(!exchange(R::Type::acknowledge,acknowledgement,R::Type::acknowledged,reply,deadline,error)) return false;
+        if(timing) {
+            measured.ack_us=elapsed(ack_started,Clock::now());
+            measured.tx_bytes+=24+acknowledgement.size();measured.rx_bytes+=24+reply.size();
+        }
         D::require(D::equal(read_header(reply),capture.header),"layer ACKED identity differs");
         std::unique_lock lock(socket_mutex_);
         if(interrupted_) {lock.unlock();return fail("acknowledgement completed after cancellation",error);}
-        result=std::move(decoded);return true;
+        result=std::move(decoded);
+        if(timing) {measured.total_us=elapsed(started,Clock::now());*timing=measured;}
+        return true;
     } catch(const std::exception &e) {return fail(e.what(),error);}
 }
 bool DeepSeekLayerClient::close(std::string &error) {

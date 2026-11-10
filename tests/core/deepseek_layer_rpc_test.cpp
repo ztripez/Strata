@@ -80,7 +80,16 @@ void happy() {
     check(client.begin(7,e),e.c_str());DeepSeekLayerResult r;
     check(client.execute(capture(),1,r,e),e.c_str());
     check(r.committed_position==3 && r.logits_rows==1 && r.logits[0]==.25f,"first TCP output wrong");
-    check(client.execute(capture(2,3,16),16,r,e),e.c_str());
+    const auto second=capture(2,3,16);DeepSeekLayerTiming timing;
+    const bool executed=client.execute(second,16,r,e,&timing);check(executed,e.c_str());
+    NativeMock independent;DeepSeekLayerResult expected;
+    check(independent(capture(),1,expected,e) && independent(second,16,expected,e),e.c_str());
+    check(r.logits==expected.logits && r.committed_position==expected.committed_position,
+          "observed output differs from the independent native callback");
+    check(timing.tx_bytes==48+execute_bytes(second,16).size()+header(second.header).size() &&
+          timing.rx_bytes==48+encode_deepseek_layer_result(layout,r).size()+header(second.header).size(),
+          "timing did not count actual EXECUTE/RESULT/ACK/ACKED framing bytes");
+    check(timing.total_us>=timing.execute_us+timing.ack_us,"transaction timing double-counted spans");
     check(r.committed_position==19 && r.logits.size()==16*layout.vocab,"second TCP output wrong");
     check(client.close(e),e.c_str());peer.finish();
     check(served,server_error.c_str());check(preparations==1 && native.calls==2 && native.position==19,"TCP executed wrong number of windows");
@@ -242,7 +251,9 @@ void transaction_deadline() {
     DeepSeekLayerClient client;std::string e;
     check(client.connect(peer.endpoint(),caps.contract,caps.binary_sha256,160,e),e.c_str());check(client.begin(7,e),e.c_str());
     DeepSeekLayerResult result;result.logits={42};const auto start=Clock::now();
-    check(!client.execute(capture(),1,result,e) && e.find("deadline")!=std::string::npos,"EXECUTE/ACK renewed transaction deadline");
+    DeepSeekLayerTiming timing{77,2,3,4,5};const auto sentinel=timing;
+    check(!client.execute(capture(),1,result,e,&timing) && e.find("deadline")!=std::string::npos,"EXECUTE/ACK renewed transaction deadline");
+    check(timing==sentinel,"failed transaction published timing");
     check(Clock::now()-start<std::chrono::milliseconds(400) && !client.healthy() && result.logits==std::vector<float>({42}),"deadline published output or left channel open");peer.finish();
 }
 void interruption() {
@@ -284,15 +295,17 @@ void interruption() {
         bool ok=client.connect(peer.endpoint(),caps.contract,caps.binary_sha256,2000,error);
         if(stage>0) {check(ok,error.c_str());ok=client.begin(7,error);}
         DeepSeekLayerResult result;result.logits={42};result.committed_position=99;
+        DeepSeekLayerTiming timing{77,2,3,4,5};const auto sentinel=timing;
         if(stage>1) {
             check(ok,error.c_str());
-            ok=stage==4 ? client.close(error):client.execute(capture(),1,result,error);
+            ok=stage==4 ? client.close(error):client.execute(capture(),1,result,error,&timing);
         }
         canceller.join();
         check(observed && !ok && error.find("interrupted")!=std::string::npos && !client.healthy(),
               "interrupted operation succeeded, lacked reason or left channel healthy");
         check(Clock::now()-interrupted_at<std::chrono::milliseconds(1000),"interruption waited for full transaction deadline");
         check(result.logits==std::vector<float>({42}) && result.committed_position==99,"interruption published unacknowledged output");
+        check(timing==sentinel,"interruption published unacknowledged timing");
         client.interrupt(); // An already-failed channel remains safely interrupted.
         check(!client.execute(capture(),1,result,error),"interrupted transaction retried");peer.finish();
 

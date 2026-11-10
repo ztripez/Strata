@@ -1,6 +1,7 @@
 // CPU-only native process admission/input tests. No model or GPU work.
 #include "ds4_layer_process.hpp"
 #include "ds4_layer_input.hpp"
+#include "ds4_layer_trace.hpp"
 #include <chrono>
 #include <cstdio>
 
@@ -19,6 +20,10 @@ template<class F> void refused(F action) {
 void configuration() {
     const auto original=arguments();const auto config=N::configuration(original);
     N::require(config.role=="prefix" && config.cpu_threads==8 && config.expert_vram_mib==384 && config.cut==20,"valid configuration changed");
+    N::require(!config.trace_windows,"window tracing changed the default profile");
+    auto traced=original;traced.push_back("--trace-windows");
+    N::require(N::configuration(traced).trace_windows,"opt-in window tracing refused");
+    traced.push_back("--trace-windows");refused([&]{N::configuration(traced);});
     for(const auto &flag:{"--role","--pack","--cut","--endpoint","--model-sha256","--pack-sha256","--plan-id","--peer-binary-sha256","--experts","--expert-vram-mib","--cpu-threads","--rpc-timeout-ms","--request-timeout-ms"}) {
         auto missing=original;const auto at=std::find(missing.begin(),missing.end(),flag);missing.erase(at,at+2);refused([&]{N::configuration(missing);});
     }
@@ -37,6 +42,23 @@ void configuration() {
     auto timeout=std::find(suffix.begin(),suffix.end(),"--request-timeout-ms");suffix.erase(timeout,timeout+2);
     N::require(N::configuration(suffix).role=="suffix","valid suffix refused");
     suffix.push_back("--check-config");N::require(N::configuration(suffix).check_only,"syntax-check mode missing");
+}
+void trace_output() {
+    const auto c=N::configuration(arguments());
+    strata::core::DeepSeekBoundaryHeader h;
+    h.model=c.model;h.pack=c.pack_identity;h.plan=c.plan;h.epoch=1;h.session=2;h.sequence=1;h.rows=1;h.next_layer=20;
+    struct File {FILE *value;~File(){if(value) std::fclose(value);}};
+    File file{std::tmpfile()};N::require(file.value!=nullptr,"temporary trace file failed");
+    N::PrefixWindowTiming t;t.feed_us=20;t.before_rpc_us=5;t.rpc_us=12;t.after_rpc_us=3;
+    t.transaction={11,7,2,123,456};
+    N::prefix_window_trace(file.value,c,c.peer_binary,h,1234,t);N::suffix_window_trace(file.value,c,c.peer_binary,h,1234,6);
+    std::rewind(file.value);std::string text;char buffer[1024];
+    while(const auto count=std::fread(buffer,1,sizeof(buffer),file.value)) text.append(buffer,count);
+    N::require(text.find("\"role\":\"prefix\"")!=std::string::npos && text.find("\"role\":\"suffix\"")!=std::string::npos &&
+               text.find("\"tx_bytes\":123")!=std::string::npos && text.find("\"native_us\":6")!=std::string::npos,
+               "trace serialization omitted spans or actual wire bytes");
+    File full{std::fopen("/dev/full","w")};N::require(full.value!=nullptr,"Linux full-device test unavailable");
+    refused([&]{N::prefix_window_trace(full.value,c,c.peer_binary,h,1234,t);});
 }
 void requests() {
     const auto r=N::request("GEN 128 seed=1 ckpt=0 temperature=0 top_k=64 top_p=1 0,1,129279");
@@ -89,6 +111,6 @@ void input_faults() {
 }
 } // namespace
 int main() {
-    try {configuration();requests();input();input_faults();std::puts("Layer process configuration/greedy/input/cancellation tests PASS; no model/device execution");return 0;}
+    try {configuration();trace_output();requests();input();input_faults();std::puts("Layer process configuration/trace/greedy/input/cancellation tests PASS; no model/device execution");return 0;}
     catch(const std::exception &error) {std::fprintf(stderr,"%s\n",error.what());return 1;}
 }

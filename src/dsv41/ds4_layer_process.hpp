@@ -45,15 +45,16 @@ struct ProcessConfig {
     Digest model{},pack_identity{},plan{},peer_binary{};
     int cut=0,cpu_threads=0,rpc_ms=0,idle_ms=0,expert_rpc_ms=0,request_ms=0;
     int64_t expert_vram_mib=0;
-    bool check_only=false;
+    bool check_only=false,trace_windows=false;
 };
 inline ProcessConfig configuration(const std::vector<std::string> &arguments) {
-    std::map<std::string,std::string> values;bool serving=false,checking=false;
+    std::map<std::string,std::string> values;bool serving=false,checking=false,tracing=false;
     const std::set<std::string> flags{"--role","--pack","--cut","--endpoint","--model-sha256","--pack-sha256","--plan-id","--peer-binary-sha256","--experts","--expert-vram-mib","--cpu-threads","--rpc-timeout-ms","--idle-timeout-ms","--request-timeout-ms","--expert-worker","--expert-worker-model","--expert-worker-placement","--expert-worker-timeout-ms"};
     for(size_t i=0;i<arguments.size();++i) {
         const auto &flag=arguments[i];
         if(flag=="--serve") {require(!serving,"duplicate --serve");serving=true;continue;}
         if(flag=="--check-config") {require(!checking,"duplicate --check-config");checking=true;continue;}
+        if(flag=="--trace-windows") {require(!tracing,"duplicate --trace-windows");tracing=true;continue;}
         require(flags.contains(flag) && i+1<arguments.size(),"unknown or incomplete layer-process option: "+flag);
         require(values.emplace(flag,arguments[++i]).second,"duplicate layer-process option: "+flag);
     }
@@ -81,7 +82,7 @@ inline ProcessConfig configuration(const std::vector<std::string> &arguments) {
         c.expert_address=take("--expert-worker");endpoint(c.expert_address);c.expert_model=take("--expert-worker-model");c.expert_placement=take("--expert-worker-placement");
         c.expert_rpc_ms=static_cast<int>(integer(take("--expert-worker-timeout-ms"),600000));require(c.expert_rpc_ms>0,"expert RPC timeout must be positive");
     }
-    c.check_only=checking;return c;
+    c.check_only=checking;c.trace_windows=tracing;return c;
 }
 
 /// One greedy GEN request in the existing Strata stdio protocol. Every request

@@ -24,6 +24,16 @@ struct DeepSeekLayerCapabilities {
     uint64_t incarnation = 0, last_session = 0;
 };
 
+/// One successful EXECUTE/RESULT plus ACK/ACKED transaction. Durations use the
+/// caller's steady clock; execute_us includes remote computation, not just the
+/// network. Bytes include the four DS4L frame headers and payloads, excluding
+/// TCP/IP overhead and connection/session setup. Never add worker computation
+/// to this measured total. Populated only when explicitly requested and ACKED.
+struct DeepSeekLayerTiming {
+    uint64_t total_us=0,execute_us=0,ack_us=0,tx_bytes=0,rx_bytes=0;
+    bool operator==(const DeepSeekLayerTiming&) const = default;
+};
+
 /// Separately versioned DS4L framing. These internal helpers are exposed for
 /// adapters and fault tests; expert-v1/v2 fields are never reinterpreted.
 namespace deepseek_layer_rpc_detail {
@@ -72,7 +82,11 @@ public:
     bool begin(uint64_t session,std::string &error);
     /// Exchange one capture/result/ACK under one transaction deadline. Publish
     /// result only after ACKED; on any failure the result is unchanged.
-    bool execute(const DeepSeekLayerBoundary &capture,uint32_t logits_rows,DeepSeekLayerResult &result,std::string &error);
+    /// Optional timing is published with result under the same cancellation
+    /// fence. Both outputs remain unchanged on failure/interruption. Omitting
+    /// it preserves the existing wire and avoids extra timing clock reads.
+    bool execute(const DeepSeekLayerBoundary &capture,uint32_t logits_rows,DeepSeekLayerResult &result,std::string &error,
+                 DeepSeekLayerTiming *timing=nullptr);
     /// End a fully acknowledged session. Failure closes the channel too.
     bool close(std::string &error);
     /// Interrupt an established channel from a cancellation thread. The request
