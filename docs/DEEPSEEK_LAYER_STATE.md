@@ -210,7 +210,7 @@ not native inference or fresh loaded-artifact hash verification.
 Cut-20 load-only probes exited 0
 on Astor `[0,20)` and Lucy `[20,40)`. Their unowned layers reported zero weights,
 window rings and expert arenas. Full raw receipts and the measurement limits are
-in the [fabric checkpoint](DISTRIBUTED_FABRIC_STATUS.md#e3-assigned-only-allocation-probe).
+in the [historical fabric checkpoint](DISTRIBUTED_FABRIC_STATUS.md#historical-e3-assigned-only-allocation-probe).
 This is not replay or connected-inference acceptance. The cut-24 range loader has
 build evidence only; its real allocation and cross-cut state tests remain open.
 
