@@ -284,7 +284,7 @@ class HostTests(unittest.TestCase):
             left.close()
             right.close()
 
-    def agent(self):
+    def agent(self, new_session=True):
         """Run the real control main with synthetic files/probes in a child process."""
         wrapper = self.root / "synthetic-agent.py"
         observed = self.root / "fresh.json"
@@ -318,7 +318,7 @@ class HostTests(unittest.TestCase):
             stdout=subprocess.PIPE,
             stderr=errorlog,
             text=True,
-            start_new_session=True,
+            start_new_session=new_session,
             env=dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parents[1])),
         )
 
@@ -369,7 +369,7 @@ class HostTests(unittest.TestCase):
 
     def test_agent_parent_eof_during_startup_reaps_the_owned_native_child(self):
         with mock.patch.dict(os.environ, STRATA_FIXTURE_MODE="hold"):
-            process = self.agent()
+            process = self.agent(new_session=False)
         self.call(process, 1, "verify")
         process.stdin.write(json.dumps({"id": 2, "action": "start-suffix"}) + "\n")
         process.stdin.flush()

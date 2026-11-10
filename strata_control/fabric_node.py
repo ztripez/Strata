@@ -56,7 +56,7 @@ def control(node: NodeHost) -> None:
     """
     if os.name != "posix":
         raise RuntimeError("fabric node control requires POSIX ownership")
-    if os.getpgrp() != os.getpid():
+    if os.getsid(0) != os.getpid():
         os.setsid()
     owner_read, owner_write = os.pipe()
     requests = queue.Queue(maxsize=1)
