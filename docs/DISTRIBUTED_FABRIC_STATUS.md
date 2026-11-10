@@ -4,7 +4,20 @@ Updated 10 November 2026. Source branch `feat/distributed-experts`. The stock
 smoke below used `3c4f7ff8`; later campaigns retain their own source snapshots
 and binary hashes. Strata's existing node-local staging remains authoritative.
 
-Latest control checkpoint, 9 November at 23:29 CET: the native HIP TCP control
+Latest mixed-host checkpoint, 10 November at 01:09 CET: two distinct 128-step
+probes, normal EOS, actual CUDA worker restart and stale-incarnation rejection
+passed. The fresh HIP-prefix EOS request reproduced the initial mixed-host
+EOS history and every raw logit row exactly. Both long probes explicitly ignored
+EOS; this is functional execution, not long-answer quality acceptance.
+The actual loaded identities and all unowned allocation guards matched.
+Sampled whole-device VRAM and observed process RSS high-water values stayed
+within the frozen limits. Sampling is not an exact allocator peak measurement.
+The accepted driver exited 0. The restarted suffix exited 1 because its first
+connection deliberately used the old incarnation; its fresh request succeeded.
+Raw receipts are in `/var/tmp/strata-deepseek-e3-mixed-batch-20261109/`.
+The separate mixed-host layer-loss follow-up and full E5 qualification remain open.
+
+Same-backend control, 9 November at 23:29 CET: the native HIP TCP control
 passed two distinct 128-step probes and a separate EOS request with exact tokens
 and all 270 saved logit rows byte-identical to the ordinary HIP reference.
 The real native suffix retained identical duplicate results and rejected
@@ -36,11 +49,15 @@ capacity or performance acceptance. Raw receipts are in
 `/var/tmp/strata-deepseek-e3-tcp-20261109/`; its `summary.json`, `first-response.json`
 and source/binary snapshots are the acceptance record.
 
-A frozen mixed-host two-prompt/EOS/restart campaign began at 23:29 CET in
-`/var/tmp/strata-deepseek-e3-mixed-batch-20261109/`. Its result is pending.
-Fixed-budget allocation probes and the bidirectional tiered-worker format matrix
-are queued behind its successful acceptance. Earlier sections below retain the
-preceding checkpoints; separate frozen executables identify each campaign.
+The following fixed-budget allocation campaign passed at 01:16 CET on both hosts.
+Zero residency allocated no expert arena; the 384 MiB profiles allocated within
+that limit and left all unowned dense/window/expert allocations zero. Both
+65,536 MiB requests produced the expected explicit refusal with raw exit 1.
+These are allocation/refusal checks, not expert arithmetic or new artifact-hash
+proof. Receipts are in `/var/tmp/strata-deepseek-fixed-budget-load-20261109/`.
+The bidirectional tiered-worker matrix started at 01:16; its first HIP worker
+verified the stock four-shard identity at 01:27 and the CUDA client began hashing.
+Its arithmetic result remains pending. Each campaign retains frozen binaries.
 
 ## Prepared combined test and resource collector
 
@@ -106,6 +123,28 @@ The control has a 30-minute startup/request bound and two-hour wall bound. Its
 existing-fixture inputs are separate from the prepared five-prompt held-out
 corpus. Fresh E5 reference repeatability, 1,000-position numerical acceptance and
 the eight-task gate remain open.
+
+The [task and complete-corpus analysis tools](DEEPSEEK_QUALITY.md) now validate
+the frozen answers and numerical thresholds. Five task/retention tests and three
+analytical corpus tests passed. The authoritative tokenizer decoded the existing
+E3 Paris EOS capture correctly. These are analysis controls, not fresh quality data.
+
+`9cd27750` exposes the existing native CPU pool limit in the opt-in harness.
+CUDA/HIP builds and 52 pre-load admission cases per host passed. Defaults and
+all already frozen campaigns retain two threads. A different CPU limit needs an
+explicit plan identity and native repeatability/long-context qualification before
+fresh held-out data. Receipts are in
+`/var/tmp/strata-deepseek-cpu-budget-20261110/`.
+
+A separate mixed-host layer-loss follow-up is sealed in
+`/var/tmp/strata-deepseek-e3-mixed-loss-20261110/`, queued after the native capture
+control so GPU model campaigns do not overlap. It uses the accepted E3 executables
+and CPU-only expert profile. After an acknowledged prompt/first output, it will
+kill only the owned CUDA suffix and require the HIP caller to exit with a clean
+network error within 60 seconds. Partial rows must all have matching acknowledged
+DS4R provenance; no successful generation may be reported. Its partial-capture
+parser was checked on a synthetic subset of existing native rows, including a
+rejected altered session. The actual mixed-host loss run remains pending.
 
 ## Qwen: bounded tiered-worker milestone completed
 
