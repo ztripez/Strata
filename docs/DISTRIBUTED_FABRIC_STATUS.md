@@ -2,7 +2,7 @@
 
 ## Current gate status
 
-Verified 10 November 2026 at 01:43 CET, branch `feat/distributed-experts`.
+Verified 10 November 2026 at 01:55 CET, branch `feat/distributed-experts`.
 This table is the authoritative current summary of the
 [E0–E8 acceptance gates](NETWORK_SHARDED_DEEPSEEK_PLAN.md#6-success-gates-and-dependency-order).
 Update it from completed receipts and live process state when a campaign advances.
@@ -17,7 +17,7 @@ quality, capacity, performance or release acceptance.
 | E3 — network layer-only inference | PARTIAL | Two mixed-host 128-step probes, EOS, restart, stale-session rejection and exact fresh EOS replay passed. Memory observations stayed within limits; VRAM sampling is not an exact allocator peak. Mixed-host layer loss is queued; the HIP-only loss control passed. |
 | E4 prerequisite — tiered expert arithmetic | RUNNING | CUDA-to-HIP passed 48 cases, all eight format pairs and actual GPU/RAM/mapped execution with no fallback. HIP-to-CUDA is running; the bidirectional gate is not yet passed. |
 | E4 — hybrid layers plus remote MoE | QUEUED | Matched layer-only/empty-ownership/real-ownership and expert-loss fixtures are sealed. Combined inference, same-token three-tier coverage and native expert fallback have not passed. |
-| E5 — numerical and task quality | NOT RUN to acceptance | Analysis tools are tested. Native teacher-forced/reset control is queued; the larger CPU/2K control is prepared. Fresh five-prompt/1,000-position and eight-task acceptance remains open. |
+| E5 — numerical and task quality | NOT RUN to acceptance | Analysis tools are tested. Native teacher-forced/reset and larger CPU/2K controls are queued. Fresh five-prompt/1,000-position and eight-task acceptance remains open. |
 | E6 — network orchestrator | PREPARATION ONLY | Read-only inventory and draft audit passed their checks. Calibrated ranking, deterministic executable plans and transactional installation remain open. |
 | E7 — capacity, speed and faults | NOT RUN | Functional/usable C1 and paired speed gates remain open. C2 model-size scaling is a separate follow-up, not an initial 2.00-bpw checkpoint claim. |
 | E8 — reproducible release checkpoint | NOT READY | Required quality, orchestration, capacity/performance and final hardware evidence is incomplete. |

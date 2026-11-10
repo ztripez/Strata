@@ -68,7 +68,24 @@ pass identities, including an empty set; it never claims all eight tasks passed
 merely because no baseline pass was lost. Numerical acceptance and runtime
 qualification remain separate.
 
-## Current evidence
+## Larger CPU-budget control
+
+The sealed fixture in `/var/tmp/strata-deepseek-e5-cpu8-control-20261110/`
+requires exact short-capture agreement with the earlier two-thread control,
+using the existing native CPU pool with an eight-thread limit. A separate
+excluded marker prompt has 1,848 input tokens and 200 fixed targets, reaching
+position 2,048. Those targets repeat the old E3 continuation; they are not a
+new reference answer. Natural EOS before and after both captures must remain
+exact after reset. The held-out corpus is separate.
+
+Startup and each request are bounded to 30 minutes; the whole control has a
+three-hour bound. It records raw process CPU/fault/I/O counters and private NFS
+mount totals alongside memory samples. These diagnostics are not calibrated
+per-expert costs or a speed result. The fixture follows the mixed-host loss
+control to avoid overlapping native model campaigns. See the
+[current gate table](DISTRIBUTED_FABRIC_STATUS.md#current-gate-status) for run status.
+
+## Analysis-tool evidence
 
 Five synthetic capture/retention tests passed. They cover native EOS versus the
 unconsumed final row, strict answer normalization, frozen prompt/budget identity,
@@ -79,5 +96,6 @@ Receipts are in `/var/tmp/strata-deepseek-task-grader-20261110/`.
 
 Three analytical corpus tests passed. They cover the exact KL/top-1 boundaries,
 unequal prompt lengths, insufficient/duplicate cases and failed references.
-Receipts are in `/var/tmp/strata-deepseek-corpus-scorer-20261110/`. The complete
-fresh numerical corpus has not run to acceptance.
+Receipts are in `/var/tmp/strata-deepseek-corpus-scorer-20261110/`. These unit checks
+do not establish fresh numerical acceptance; use the current gate table for
+runtime status.
