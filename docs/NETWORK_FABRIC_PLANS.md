@@ -31,8 +31,10 @@ uses its existing two-thread DeepSeek CPU path; this schema adds no CPU pool,
 cache, quantizer or paging mechanism.
 
 `Plan.identity()` hashes canonical JSON with the domain `strata-fabric-plan/1`.
-Node, worker, expert-pair and pack-source enumeration is normalized. Mapped-file
-order remains significant because it is part of the native model contract.
+Node, worker and pack-source enumeration is normalized. Expert-pair order remains
+significant: the native worker fills GPU residency and then copied RAM in that
+order. The planner must retain its intended tier priority. Mapped-file order is
+also significant because it is part of the native model contract.
 `PlanDocument` rejects a claimed hash that differs from its actual plan.
 The schema admits static placements only; it cannot label unmeasured constants
 as a calibrated speed/capacity ranking.

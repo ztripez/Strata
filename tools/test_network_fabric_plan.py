@@ -176,10 +176,11 @@ class PlanTests(unittest.TestCase):
         changed = copy.deepcopy(self.data)
         changed["nodes"].reverse()
         changed["workers"].reverse()
-        for worker in changed["workers"]:
-            worker["pairs"].reverse()
         changed["model"]["pack_files"].reverse()
         self.assertEqual(parse(changed).identity(), self.plan.identity())
+        changed["workers"][1]["pairs"].reverse()
+        self.assertNotEqual(parse(changed).identity(), self.plan.identity())
+        changed["workers"][1]["pairs"].reverse()
         changed["model"]["mapped_files"].reverse()
         self.assertNotEqual(parse(changed).identity(), self.plan.identity())
 
@@ -303,7 +304,7 @@ class BundleTests(unittest.TestCase):
                 )
                 self.assertEqual(command.node, node)
                 self.assertEqual(command.environment["DS4_IQ_Q8K"], "1")
-        self.assertEqual((output / "a/remote.plan").read_text(), "0 128\n0 255\n")
+        self.assertEqual((output / "a/remote.plan").read_text(), "0 255\n0 128\n")
         self.assertEqual((output / "b/remote.plan").read_text(), "20 129\n")
         saved = (output / "installation.json").read_bytes()
         with self.assertRaises(FileExistsError):

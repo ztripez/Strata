@@ -157,12 +157,12 @@ class ExpertOwner(Record):
 
     @field_validator("pairs")
     @classmethod
-    def ordered_pairs(cls, value: tuple[Pair, ...]) -> tuple[Pair, ...]:
-        """Order has no ownership meaning; duplicates are an input error."""
+    def unique_pairs(cls, value: tuple[Pair, ...]) -> tuple[Pair, ...]:
+        """Preserve native GPU/RAM fill priority while rejecting duplicates."""
         keys = [(pair.layer, pair.expert) for pair in value]
         if len(set(keys)) != len(keys):
             raise ValueError("duplicate expert ownership")
-        return tuple(sorted(value, key=lambda pair: (pair.layer, pair.expert)))
+        return value
 
     def native_placement(self) -> str:
         """Use the existing native layer/expert text grammar, without a new parser."""
