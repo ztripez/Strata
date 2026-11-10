@@ -36,6 +36,27 @@ report and exits nonzero; a broken input/reference stops before candidate scorin
 The report is numerical capture evidence only. Run it for both layer-only and
 hybrid outputs, and retain the separate task and runtime gates.
 
+## Free-running divergence
+
+Run separate fixed-length greedy diagnostics with native ignore-EOS enabled.
+Compare them against the unchanged first reference and its frozen continuation:
+
+```sh
+uv run --no-project --with pydantic==2.14.2 python -m tools.compare_ds4_generation FIRST_REFERENCE_CASE FROZEN_CASE CANDIDATE_GREEDY_CASE NEW_GENERATION_REPORT.json
+```
+
+The report retains both token sequences, every selected EOS, the first differing
+token's zero-based index and the shared-prefix length. Positional matches after
+divergence have different prefixes; they are not same-prefix top-1 agreement.
+Teacher-forced captures are refused, even when their feeds happen to match greedy
+choices. Both greedy captures must include the complete prompt, every selected
+token and the final extra row. All raw rows must be finite and match their
+recorded argmax. The reference must still match its frozen raw bytes.
+
+A valid divergent run writes a diagnostic and exits zero. This command has no
+quality pass predicate and cannot replace the numerical corpus or task gates.
+Invalid captures fail without publishing a report. Existing reports are refused.
+
 ## Exact-answer tasks
 
 ```sh
@@ -99,3 +120,11 @@ unequal prompt lengths, insufficient/duplicate cases and failed references.
 Receipts are in `/var/tmp/strata-deepseek-corpus-scorer-20261110/`. These unit checks
 do not establish fresh numerical acceptance; use the current gate table for
 runtime status.
+
+Four free-running fixture tests passed, including valid divergence, preserved
+EOS, teacher-forced refusal, changed baseline and damaged prefill/final rows.
+On the existing excluded E3 engineering captures, the same-backend TCP control
+matched all 128 baseline tokens. The mixed-host capture first differed at index
+17 and matched 18 of 128 token positions overall. This reports the earlier
+functional run; it is not fresh E5 qualification. Receipts are in
+`/var/tmp/strata-deepseek-generation-diagnostic-20261110/`.
