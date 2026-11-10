@@ -179,3 +179,43 @@ tokenizer test passed separately with the pinned real assets. The common loader
 also decoded an existing excluded native EOS capture correctly, and all 79 E5
 pre-data files retained their sealed hashes. These checks do not run a native
 model through HTTP or qualify native cancellation, E5 quality or E6 installation.
+
+## Native endpoint qualification
+
+The frozen fixture in `/var/tmp/strata-deepseek-layer-api-20261110/` is queued
+behind successful fresh E5 acceptance. It verified all 281 pinned input/control
+files on both hosts before waiting. No model has run through this fixture yet.
+Five fixture controls passed on each host, including failure capture, cancellation
+drain ordering, observing layer loss without disconnecting the client, refusal of
+an incorrect process birth time and refusal to launch after a failed prerequisite.
+Three native syntax/pre-device admission controls passed per host. These are
+preparation checks, not endpoint inference results.
+
+The static profile assigns `[0,20)` to HIP on Astor and `[20,40)` to CUDA on Lucy.
+Both layer owners request eight CPU threads, six experts and a 384 MiB native
+expert arena. Opposite-host expert workers each have 20 MiB GPU and 20 MiB copied
+RAM budgets, with remaining assigned identities using the existing mapped lane.
+Model/pack identities, binaries, the serving Python bundle, resource limits and
+the excluded mixed-host EOS token oracle were pinned before API output.
+
+The controller requires ordinary and streaming EOS responses to reproduce the
+fixed IDs. It then disconnects a long stream after visible text, requires a native
+cancellation receipt and checks exact EOS replay on the next fresh request. Both
+expert directions must execute mapped work without fallback. Finally it stops
+only the owned suffix, verified by argv, process birth time and a Linux pidfd.
+The failed request must abort; subsequent traffic must receive HTTP 503 without
+automatic replay. That loss client stays connected while observing the failure.
+
+Startup bounds are 30 minutes per expert worker and 45 minutes per layer owner.
+Requests have a 30-minute limit; cancellation/loss observation has 60 seconds.
+The active wall limit is eight hours, separate from the 72-hour prerequisite wait.
+Before loading, the controller checks that prior native processes are gone, its
+private storage lease covers the active wall plus 30 minutes, and each evidence
+filesystem has at least 2 GiB free. This fixture saves token records and telemetry,
+without E5's full-vocabulary logit dumps. Raw memory/CPU/I/O and private NFS
+statistics remain separate from performance qualification.
+
+Acceptance requires `driver.exit` equal to `0` and `summary.json` status
+`native_hybrid_http_functional_cancel_and_layer_loss_pass`. No accepted receipt
+exists yet. This is a static endpoint/lifecycle check; it does not replace E5
+quality, install an E6 plan or qualify E7 capacity/speed or E8 release readiness.
