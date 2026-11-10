@@ -9,8 +9,9 @@ import hashlib
 from pathlib import Path
 from typing import Annotated, Literal
 
-from pydantic import Field, TypeAdapter, model_validator
+from pydantic import Field, model_validator
 
+from serve.tokenizer_assets import TokenizerPins, load_deepseek
 from tools.compare_ds4_layer_logits import (
     Record,
     Token,
@@ -21,13 +22,6 @@ from tools.compare_ds4_layer_logits import (
 from tools.ds4_quality_inputs import CaseId, QualityInputs, TaskCase
 from tools.freeze_ds4_reference import Digest, capture_hash
 from tools.strata_tokenizer import Tokenizer
-
-
-class TokenizerConfiguration(Record):
-    """Pinned extracted tokenizer configuration; no inferred special IDs."""
-
-    pre: Literal["deepseek3"]
-    special_ids: dict[str, int]
 
 
 class TaskResult(Record):
@@ -126,47 +120,12 @@ def retain(
 
 def load_tokenizer(assets: Path, corpus: QualityInputs) -> Tokenizer:
     """Load the authoritative tokenizer after matching every pinned asset hash."""
-    actual = {
-        path.name: hashlib.sha256(path.read_bytes()).hexdigest()
-        for path in assets.iterdir()
-        if path.is_file()
-    }
-    if actual != corpus.tokenizer_assets_sha256:
-        raise ValueError("tokenizer asset set or bytes differ from the frozen corpus")
-    source = Path(__file__).with_name("strata_tokenizer.py")
-    if (
-        hashlib.sha256(source.read_bytes()).hexdigest()
-        != corpus.source_code_sha256["tools/strata_tokenizer.py"]
-    ):
-        raise ValueError(
-            "authoritative tokenizer source differs from frozen preparation"
-        )
-    config = TokenizerConfiguration.model_validate_json(
-        (assets / "tokenizer.json").read_bytes()
-    )
-    if config.special_ids.get("eos") != 1:
-        raise ValueError("pinned DeepSeek EOS identity differs")
-    vocabulary = TypeAdapter(dict[str, int]).validate_json(
-        (assets / "vocab.json").read_bytes(), strict=True
-    )
-    if sorted(vocabulary.values()) != list(range(129280)):
-        raise ValueError(
-            "tokenizer vocabulary is not the pinned contiguous DeepSeek vocabulary"
-        )
-    tokens = [""] * len(vocabulary)
-    for token, index in vocabulary.items():
-        tokens[index] = token
-    types = TypeAdapter(list[int]).validate_json(
-        (assets / "token_type.json").read_bytes(), strict=True
-    )
-    if len(types) != len(tokens):
-        raise ValueError("tokenizer type count differs from vocabulary")
-    return Tokenizer(
-        tokens,
-        (assets / "merges.txt").read_text().split("\n"),
-        types,
-        config.pre,
-        config.special_ids,
+    return load_deepseek(
+        assets,
+        TokenizerPins(
+            assets_sha256=corpus.tokenizer_assets_sha256,
+            source_sha256=corpus.source_code_sha256["tools/strata_tokenizer.py"],
+        ),
     )
 
 

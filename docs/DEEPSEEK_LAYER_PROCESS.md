@@ -5,10 +5,10 @@ DeepSeek Model and [DS4L layer protocol](DEEPSEEK_LAYER_RPC.md). It keeps assign
 layers loaded across requests. It adds no quantization, expert cache or paging
 implementation. The existing released executables and launch defaults are unchanged.
 
-This is serving preparation, not a qualified network endpoint or installed E6
-plan. Consult the [current gate table](DISTRIBUTED_FABRIC_STATUS.md#current-gate-status)
-for acceptance. Real model execution through this new process, HTTP integration
-and orchestrator installation still require separate checks.
+This is serving preparation, not a model-qualified network endpoint or installed
+E6 plan. Consult the [current gate table](DISTRIBUTED_FABRIC_STATUS.md#current-gate-status)
+for acceptance. HTTP/stdio integration has synthetic-process checks; real model
+execution through this new process and orchestrator installation remain open.
 
 ## Build and configuration
 
@@ -104,7 +104,55 @@ Socket interruption cannot kill a GPU kernel or a blocked filesystem operation.
 TCP setup retains its declared connect bound. Native cancellation polls and the
 request deadline prevent further publication once expiry is observed; a process
 supervisor must still enforce hard limits on stuck computation/I/O. This process
-does not provide that supervisor or an HTTP launcher yet.
+does not provide that external supervisor. The opt-in HTTP launcher below owns
+its prefix process, but does not supervise remote workers or blocked kernel I/O.
+
+## Opt-in HTTP launcher
+
+`serve.deepseek_layer` uses the existing Strata HTTP server, chat template,
+tokenizer and stdio engine transport. It serves one explicitly specified prefix
+on `127.0.0.1`. Start the pinned suffix and any expert workers separately first.
+It does not discover machines, calibrate placement or install a cluster plan.
+
+Run it in a dedicated process from the source checkout:
+
+```sh
+uv run --no-project --with pydantic==2.14.2 --with regex==2026.9.10 --with jinja2==3.1.6 \
+  python -m serve.deepseek_layer /absolute/path/to/launch.json
+```
+
+The strict JSON launch binding has these fields. Generate it from the sealed
+experiment or installer; do not substitute a hash of a storage-shard filename
+for a model or pack identity.
+
+| Field | Required value |
+| --- | --- |
+| `schema_version` | `strata-layer-http-launch/1`. |
+| `executable` | Absolute path to the pinned `strata-deepseek-layer` prefix executable. |
+| `native_args` | Array of the native options above, beginning with `--role`, `prefix`. Omit `--serve` and `--check-config`; the launcher supplies them. |
+| `expected` | Expected native INFO receipt: `arch=deepseek41`, `fabric=1`, `role=prefix`, `context=2048`, `effective_experts=6`, `arithmetic=2`; the four `model_sha256`, `pack_sha256`, `plan_sha256`, `binary_sha256` hashes; and the explicit `cpu_threads_limit`, `expert_vram_mib`, `request_timeout_ms`, `rpc_timeout_ms`, `idle_timeout_ms=0`. Use JSON numbers for numeric fields. |
+| `tokenizer_dir` | Absolute directory containing exactly the five exported assets below. |
+| `tokenizer` | Object with `assets_sha256` mapping each of `vocab.json`, `merges.txt`, `tokenizer.json`, `token_type.json`, `chat_template.jinja` to its SHA-256; and `source_sha256` pinning `tools/strata_tokenizer.py`. |
+| `engine_log` | Absolute path to a new log. An existing file is refused and preserved. |
+| `engine_ready_s` | Explicit startup allowance, greater than zero and at most 7,200 seconds. Model hashing is part of startup. |
+| `port` | Optional loopback HTTP port, default `8098`. |
+| `max_queue`, `queue_timeout_s` | Optional bounded queue, default zero waiting requests and 30 seconds. |
+| `model_name` | Optional API model name, default `deepseek-v4.1-flash-fabric`. |
+
+All hashes are 64 lowercase hexadecimal characters. Before HTTP opens, the
+launcher verifies the executable and tokenizer, runs the native syntax preflight,
+then compares actual READY/INFO with the expected identity and resource limits.
+It prevents the ordinary server's leftover-process cleanup and automatic engine
+retry/reload for this dedicated fabric process. A failed prefix needs an explicit
+fresh start; a partial generation is not replayed.
+
+The existing `/v1/chat/completions` endpoint supports ordinary and streaming text
+responses here. Defaults are greedy. Unsupported sampling, logprobs, checkpoint,
+image and tuning controls are refused before a native GEN write. Prompt plus
+requested output must fit 2K, with the same native prompt/output bounds above.
+SIGINT/SIGTERM during startup or serving closes the owned prefix through the
+existing bounded STOP/QUIT, terminate and kill sequence. Remote layer/expert
+processes remain the external controller's responsibility.
 
 ## Verification scope
 
@@ -120,3 +168,14 @@ Receipts, source snapshots and pinned binaries are retained in
 checks remain separate from the version with an explicit request deadline.
 These are build/control checks, not native inference, numerical quality, HTTP
 cancellation, orchestration, capacity or performance acceptance.
+
+HTTP adapter receipts are in
+`/var/tmp/strata-deepseek-layer-http-20261110/`. Twenty-one focused tests passed,
+including synthetic stdio admission, actual loopback HTTP/SSE, greedy defaults,
+strict request limits, preserved logs, refusal of automatic startup retries and
+child cleanup on startup/serving termination. The existing server suite passed
+68 tests with one skipped; that
+tokenizer test passed separately with the pinned real assets. The common loader
+also decoded an existing excluded native EOS capture correctly, and all 79 E5
+pre-data files retained their sealed hashes. These checks do not run a native
+model through HTTP or qualify native cancellation, E5 quality or E6 installation.

@@ -2,7 +2,7 @@
 
 ## Current gate status
 
-Verified 10 November 2026 at 03:21 CET, branch `feat/distributed-experts`.
+Verified 10 November 2026 at 03:57 CET, branch `feat/distributed-experts`.
 This table is the authoritative current summary of the
 [E0–E8 acceptance gates](NETWORK_SHARDED_DEEPSEEK_PLAN.md#6-success-gates-and-dependency-order).
 Update it from completed receipts and live process state when a campaign advances.
@@ -16,7 +16,7 @@ quality, capacity, performance or release acceptance.
 | E2 — layer-state replay | PASS, bounded | HIP cuts20/24 passed 128-step exact replay/state checks; assigned-only cut20 replay passed. This is same-backend state evidence, not mixed-backend quality. |
 | E3 — network layer-only inference | PARTIAL | Two mixed-host 128-step probes, EOS, restart, stale-session rejection and exact fresh EOS replay passed. Memory observations stayed within limits; VRAM sampling is not an exact allocator peak. Mixed-host layer loss is queued; the HIP-only loss control passed. |
 | E4 prerequisite — tiered expert arithmetic | PASS, bounded | Both CUDA-to-HIP and HIP-to-CUDA passed 48 cases across eight format pairs. Each direction executed 256 GPU, 240 RAM and 464 mapped assignments with zero fallbacks. This is expert arithmetic, not combined layer inference. |
-| E4 — hybrid layers plus remote MoE | RUNNING | Matched layer-only control passed two 128-step probes and EOS. Empty-ownership control is starting its layer owners after both expert workers became ready. Real-ownership inference, same-token three-tier coverage and expert-loss fallback have not passed. |
+| E4 — hybrid layers plus remote MoE | RUNNING | Matched layer-only control passed two 128-step probes and EOS. Empty-ownership suffix verified its actual identity and listener at 03:47 CET; prefix startup is in progress. Real-ownership inference, same-token three-tier coverage and expert-loss fallback have not passed. |
 | E5 — numerical and task quality | QUEUED, not accepted | Native teacher-forced/reset and CPU/2K controls are queued. The fresh five-prompt/1,000-position/eight-task controller is also queued behind those prerequisites. All 79 pre-data files match on both hosts; no held-out model output has been collected. |
 | E6 — network orchestrator | PREPARATION ONLY | Read-only inventory and draft audit passed their checks. Calibrated ranking, deterministic executable plans and transactional installation remain open. |
 | E7 — capacity, speed and faults | NOT RUN | Functional/usable C1 and paired speed gates remain open. C2 model-size scaling is a separate follow-up, not an initial 2.00-bpw checkpoint claim. |
@@ -35,8 +35,15 @@ The [fresh E5 fixture](DEEPSEEK_QUALITY.md#fresh-quality-campaign) is pinned in
 `/var/tmp/strata-deepseek-e5-quality-20261110/`; its live controller is waiting
 for the upstream native controls rather than collecting fresh outputs.
 The [persistent native process](DEEPSEEK_LAYER_PROCESS.md) has passed builds and
-CPU/admission controls. Actual model execution through that new entry point and
-its HTTP integration remain unqualified; it is not an E3/E4/E5 pass.
+CPU/admission controls. Its opt-in HTTP adapter has passed synthetic-process
+HTTP/SSE and lifecycle tests. Actual model execution through that new entry
+point remains unqualified; these checks do not advance E3/E4/E5.
+
+Maintain this table in place. Advance a gate only after checking its completed
+receipt, raw exit and declared acceptance criteria. Record partial passes and
+remaining work separately. When adding a checkpoint below, label it historical
+and keep its original result; do not treat an old “NOT RUN” as the current state.
+Recheck live state before relying on a dated `RUNNING` or `QUEUED` entry.
 
 ## Historical checkpoints
 
