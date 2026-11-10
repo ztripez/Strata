@@ -65,6 +65,21 @@ socket progress. Socket deadlines cannot interrupt a GPU kernel or an NFS read.
 The native adapter and its supervisor must bound computation separately, and
 must abandon native state after a failed service call.
 
+An established client channel supports `interrupt()` from a cancellation thread.
+It shuts down the socket to wake a blocked transaction; the transaction owner
+closes the descriptor. This prevents cancellation from acting on a descriptor
+that another operation has already reused. Interruption is latched and is checked
+under the same lock as result publication. An interrupted transaction publishes
+no output; an already acknowledged and published result remains valid.
+
+Only `interrupt()` may run concurrently with client operations. Join cancellation
+callers before destroying the client or explicitly connecting it to a new session.
+The client never retries automatically. Connection setup keeps its declared TCP
+deadline, and channel interruption does not prove that remote GPU or filesystem
+work has stopped. Reset the remote native session separately. This API is a
+prerequisite for serving cancellation; the ordinary HTTP serving path has not yet
+been connected to whole-layer RPC.
+
 ## Validation and limits
 
 On 9 November 2026, six CPU protocol/geometry tests passed on Lucy and Astor.
@@ -77,6 +92,16 @@ on Lucy. The shared network library built in both CUDA and HIP build trees.
 
 These are delivery-contract tests, not GPU arithmetic, native TCP inference,
 mixed-backend parity, quality, recovery, capacity or performance evidence.
+
+On 10 November, interruption during discovery, BEGIN, RESULT, ACKED and CLOSE
+waits passed on Lucy and Astor. Each case woke before the transaction deadline,
+left output unchanged, refused retry and accepted a later explicit fresh session.
+The RPC suite also passed AddressSanitizer, UndefinedBehaviorSanitizer and
+ThreadSanitizer on Lucy. The native layer harness and `strata-dsv41` built with
+CUDA and HIP; the network backend does not support SYCL. Receipts and pinned
+binaries are in `/var/tmp/strata-deepseek-layer-interrupt-20261110/`.
+These checks do not prove cancellation of real model computation or an HTTP
+request. Active quality/functional campaigns retain their older frozen binaries.
 
 ## Native layer harness (qualification pending)
 

@@ -193,8 +193,17 @@ bool DeepSeekLayerService::serve(int fd,int timeout_ms,std::string &error) {
 }
 
 DeepSeekLayerClient::~DeepSeekLayerClient() {expert_worker_close(fd_);}
+void DeepSeekLayerClient::interrupt() {
+    std::lock_guard lock(socket_mutex_);
+    interrupted_=true;
+    // Shutdown wakes receive/send without releasing the descriptor. Only the
+    // owning transaction closes it, so cancellation cannot hit a reused fd.
+    expert_worker_shutdown(fd_);
+}
 bool DeepSeekLayerClient::fail(const std::string &reason,std::string &error) {
-    error=reason;expert_worker_shutdown(fd_);expert_worker_close(fd_);begun_=false;return false;
+    std::lock_guard lock(socket_mutex_);
+    error=interrupted_ ? "layer channel interrupted: "+reason:reason;
+    expert_worker_shutdown(fd_);expert_worker_close(fd_);begun_=false;return false;
 }
 bool DeepSeekLayerClient::exchange(R::Type request,const std::vector<uint8_t> &payload,R::Type expected,
     std::vector<uint8_t> &reply,Clock::time_point deadline,std::string &error) {
@@ -215,16 +224,24 @@ bool DeepSeekLayerClient::connect(const std::string &endpoint,const DeepSeekLaye
         validate_contract(expected);D::require(timeout_ms>0 && timeout_ms<=600000,"invalid layer transaction deadline");
         D::require(std::any_of(binary.begin(),binary.end(),[](uint8_t b){return b!=0;}),"missing pinned worker executable identity");
         timeout_ms_=timeout_ms;next_id_=1;begun_=false;
+        {std::lock_guard lock(socket_mutex_);interrupted_=false;}
         std::string host;uint16_t port=0;
         D::require(expert_worker_parse_host_port(endpoint,host,port),"invalid numeric layer endpoint");
         const auto deadline=Clock::now()+std::chrono::milliseconds(timeout_ms_);
         const int connect_ms=remaining(deadline);
         D::require(connect_ms>0,"layer connection deadline exceeded");
-        fd_=expert_worker_connect(host,port,connect_ms,&error);if(fd_<0) return false;
+        const int connected=expert_worker_connect(host,port,connect_ms,&error);
+        {
+            std::unique_lock lock(socket_mutex_);fd_=connected;
+            if(interrupted_) {lock.unlock();return fail("connection completed after cancellation",error);}
+        }
+        if(fd_<0) return false;
         std::vector<uint8_t> reply;
         if(!exchange(R::Type::discover,{},R::Type::capabilities,reply,deadline,error)) return false;
         auto actual=R::capabilities(reply);
         D::require(R::contract_bytes(actual.contract)==R::contract_bytes(expected) && actual.binary_sha256==binary,"layer worker model/pack/plan/arithmetic/binary differs");
+        std::unique_lock lock(socket_mutex_);
+        if(interrupted_) {lock.unlock();return fail("discovery completed after cancellation",error);}
         capabilities_=std::move(actual);return true;
     } catch(const std::exception &e) {return fail(e.what(),error);}
 }
@@ -239,6 +256,8 @@ bool DeepSeekLayerClient::begin(uint64_t id,std::string &error) {
         auto ready=R::capabilities(reply);
         D::require(ready.last_session==id && ready.incarnation==capabilities_.incarnation && ready.binary_sha256==capabilities_.binary_sha256 &&
                    ready.backend==capabilities_.backend && R::contract_bytes(ready.contract)==R::contract_bytes(capabilities_.contract),"layer READY differs from discovery/preparation");
+        std::unique_lock lock(socket_mutex_);
+        if(interrupted_) {lock.unlock();return fail("preparation completed after cancellation",error);}
         capabilities_=std::move(ready);session_=identity;begun_=true;return true;
     } catch(const std::exception &e) {return fail(e.what(),error);}
 }
@@ -256,6 +275,8 @@ bool DeepSeekLayerClient::execute(const DeepSeekLayerBoundary &capture,uint32_t 
         auto decoded=decode_deepseek_layer_result(capabilities_.contract.layout,capture.header,rows,reply);
         if(!exchange(R::Type::acknowledge,header_bytes(capture.header),R::Type::acknowledged,reply,deadline,error)) return false;
         D::require(D::equal(read_header(reply),capture.header),"layer ACKED identity differs");
+        std::unique_lock lock(socket_mutex_);
+        if(interrupted_) {lock.unlock();return fail("acknowledgement completed after cancellation",error);}
         result=std::move(decoded);return true;
     } catch(const std::exception &e) {return fail(e.what(),error);}
 }
@@ -264,6 +285,8 @@ bool DeepSeekLayerClient::close(std::string &error) {
     std::vector<uint8_t> reply;
     if(!exchange(R::Type::close,{},R::Type::closed,reply,Clock::now()+std::chrono::milliseconds(timeout_ms_),error)) return false;
     if(!reply.empty()) return fail("unexpected layer CLOSED payload",error);
+    std::unique_lock lock(socket_mutex_);
+    if(interrupted_) {lock.unlock();return fail("close completed after cancellation",error);}
     expert_worker_close(fd_);begun_=false;return true;
 }
 } // namespace strata::core

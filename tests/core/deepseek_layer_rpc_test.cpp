@@ -245,6 +245,69 @@ void transaction_deadline() {
     check(!client.execute(capture(),1,result,e) && e.find("deadline")!=std::string::npos,"EXECUTE/ACK renewed transaction deadline");
     check(Clock::now()-start<std::chrono::milliseconds(400) && !client.healthy() && result.logits==std::vector<float>({42}),"deadline published output or left channel open");peer.finish();
 }
+void interruption() {
+    const auto caps=receipt();
+    // Cancel discovery, BEGIN, result delivery, ACK delivery and CLOSE while
+    // the peer deliberately withholds that operation's response.
+    for(int stage=0;stage<5;++stage) {
+        DeepSeekLayerClient client;std::atomic<bool> waiting{false},observed{false};
+        Clock::time_point interrupted_at;
+        Peer peer([&](int fd) {
+            auto request=receive(fd);check(request.type==R::Type::discover,"missing discovery");
+            if(stage>0) {
+                send(fd,R::Type::capabilities,request.request_id,R::capability_bytes(caps));
+                request=receive(fd);check(request.type==R::Type::begin,"missing BEGIN");
+                if(stage>1) {
+                    auto ready=caps;ready.last_session=7;
+                    send(fd,R::Type::ready,request.request_id,R::capability_bytes(ready));
+                    request=receive(fd);
+                    if(stage==4) check(request.type==R::Type::close,"missing CLOSE");
+                    else {
+                        check(request.type==R::Type::execute,"missing EXECUTE");
+                        if(stage==3) {
+                            send(fd,R::Type::result,request.request_id,encode_deepseek_layer_result(layout,mock_result()));
+                            request=receive(fd);check(request.type==R::Type::acknowledge,"missing ACK");
+                        }
+                    }
+                }
+            }
+            waiting=true;
+            R::Frame next;std::string error;
+            check(!R::receive(fd,next,1500,error),"interrupted client sent another request");
+        });
+        std::jthread canceller([&] {
+            const auto deadline=Clock::now()+std::chrono::milliseconds(1000);
+            while(!waiting && Clock::now()<deadline) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            observed=waiting.load();interrupted_at=Clock::now();client.interrupt();
+        });
+        std::string error;
+        bool ok=client.connect(peer.endpoint(),caps.contract,caps.binary_sha256,2000,error);
+        if(stage>0) {check(ok,error.c_str());ok=client.begin(7,error);}
+        DeepSeekLayerResult result;result.logits={42};result.committed_position=99;
+        if(stage>1) {
+            check(ok,error.c_str());
+            ok=stage==4 ? client.close(error):client.execute(capture(),1,result,error);
+        }
+        canceller.join();
+        check(observed && !ok && error.find("interrupted")!=std::string::npos && !client.healthy(),
+              "interrupted operation succeeded, lacked reason or left channel healthy");
+        check(Clock::now()-interrupted_at<std::chrono::milliseconds(1000),"interruption waited for full transaction deadline");
+        check(result.logits==std::vector<float>({42}) && result.committed_position==99,"interruption published unacknowledged output");
+        client.interrupt(); // An already-failed channel remains safely interrupted.
+        check(!client.execute(capture(),1,result,error),"interrupted transaction retried");peer.finish();
+
+        // A new connection is explicit and starts a fresh service/session. No
+        // cancellation caller remains alive when the same client is reused.
+        NativeMock native;
+        DeepSeekLayerService service(caps,[](const auto &,std::string &){return true;},std::ref(native));
+        Peer fresh([&](int fd){std::string why;check(service.serve(fd,1000,why),why.c_str());});
+        check(client.connect(fresh.endpoint(),caps.contract,caps.binary_sha256,1000,error),error.c_str());
+        check(client.begin(7,error) && client.execute(capture(),1,result,error) && client.close(error),error.c_str());
+        fresh.finish();check(native.calls==1,"fresh explicit session failed or retried work");
+    }
+    DeepSeekLayerClient idle;idle.interrupt();idle.interrupt();
+    check(!idle.healthy(),"unconnected interrupted channel is healthy");
+}
 void framing() {
     int fd[2]{-1,-1};check(::socketpair(AF_UNIX,SOCK_STREAM,0,fd)==0,"socketpair failed");Fd a{fd[0]},b{fd[1]};
     send(a.value,R::Type::discover,0x0102030405060708ULL);
@@ -273,7 +336,7 @@ void framing() {
 }
 }
 int main() {
-    try {framing();happy();fresh_connections();discovery_faults();raw_delivery_faults();preparation_fence();unexplained_preparation_failure();response_faults();transaction_deadline();
-        std::puts("DS4L real TCP contract/delivery/fault/deadline tests PASS; native inference remains separate");return 0;
+    try {framing();happy();fresh_connections();discovery_faults();raw_delivery_faults();preparation_fence();unexplained_preparation_failure();response_faults();transaction_deadline();interruption();
+        std::puts("DS4L real TCP contract/delivery/fault/deadline/interruption tests PASS; native inference remains separate");return 0;
     } catch(const std::exception &e) {std::fprintf(stderr,"%s\n",e.what());return 1;}
 }

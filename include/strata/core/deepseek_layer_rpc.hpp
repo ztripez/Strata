@@ -2,6 +2,7 @@
 
 #include "strata/core/deepseek_layer_session.hpp"
 #include <chrono>
+#include <mutex>
 
 namespace strata::core {
 
@@ -74,14 +75,25 @@ public:
     bool execute(const DeepSeekLayerBoundary &capture,uint32_t logits_rows,DeepSeekLayerResult &result,std::string &error);
     /// End a fully acknowledged session. Failure closes the channel too.
     bool close(std::string &error);
+    /// Interrupt an established channel from a cancellation thread. The request
+    /// is latched; pending transactions fail without publishing output or retry.
+    /// TCP connection setup still has its declared connect deadline. Only this
+    /// method may run concurrently with other operations. Join cancellation
+    /// callers before destruction or reusing the client for another connect().
+    /// Interruption does not prove the remote executor has stopped; its session
+    /// must reset.
+    void interrupt();
     const DeepSeekLayerCapabilities &capabilities() const { return capabilities_; }
-    bool healthy() const { return fd_>=0; }
+    /// Whether the owned channel is open and has not been interrupted.
+    bool healthy() const { std::lock_guard lock(socket_mutex_);return fd_>=0 && !interrupted_; }
 private:
     bool fail(const std::string &reason,std::string &error);
     bool exchange(deepseek_layer_rpc_detail::Type request,const std::vector<uint8_t> &payload,
                   deepseek_layer_rpc_detail::Type expected,std::vector<uint8_t> &reply,
                   std::chrono::steady_clock::time_point deadline,std::string &error);
     int fd_=-1, timeout_ms_=0;
+    mutable std::mutex socket_mutex_;
+    bool interrupted_=false;
     uint64_t next_id_=1;
     bool begun_=false;
     DeepSeekLayerCapabilities capabilities_;
