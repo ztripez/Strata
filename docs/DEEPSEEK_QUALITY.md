@@ -128,3 +128,53 @@ matched all 128 baseline tokens. The mixed-host capture first differed at index
 17 and matched 18 of 128 token positions overall. This reports the earlier
 functional run; it is not fresh E5 qualification. Receipts are in
 `/var/tmp/strata-deepseek-generation-diagnostic-20261110/`.
+
+## Fresh quality campaign
+
+The fixture in `/var/tmp/strata-deepseek-e5-quality-20261110/` pins 79 input,
+binary and support files on both hosts. Its controller waits for the accepted
+hybrid, capture/reset, mixed-host layer-loss and CPU8/2K controls. Before fresh
+inference it rechecks their sealed inputs, completed exits and actual CPU pool
+receipts, then records the baseline seal. A failed prerequisite withholds fresh
+execution. Consult the [current gate table](DISTRIBUTED_FABRIC_STATUS.md#current-gate-status)
+for live state; preparation is not quality acceptance.
+
+The five sequential phases are:
+
+1. Ordinary HIP reference: five 200-token ignore-EOS continuations and eight
+   normal-EOS exact-answer tasks, with a 128-token limit per task.
+2. A second ordinary HIP run: require exact history and every raw row from all
+   thirteen reference requests before collecting candidates.
+3. Mixed-host layer-only inference: teacher-force the unchanged five baseline
+   continuations, repeat the eight tasks and record three separate free-running
+   diagnostics across short, medium and long contexts.
+4. Empty expert ownership: require exact histories, raw rows and per-node GPU
+   placement against the matched layer-only configuration.
+5. Real hybrid ownership: require actual expert RPC in both directions, worker
+   mapped-tier execution and no fallback, then apply the frozen numerical and
+   task-retention gates.
+
+The first reference's actual selected tokens, including EOS, are frozen once.
+Every phase has a distinct content-derived plan ID. Candidate IDs additionally
+bind the frozen continuations; no baseline replacement or post-result threshold
+change is allowed. A valid free-running divergence is reported separately from
+teacher-forced acceptance. Raw exits and failed gates remain retained.
+
+Each layer process uses an eight-thread native CPU limit and 384 MiB expert GPU
+budget. Expert workers use 20 MiB GPU and 20 MiB RAM budgets. Startup is bounded
+to 30 minutes, or 45 minutes for expert-enabled primaries that verify both expert
+and layer identities. Each request has a 30-minute bound, each phase eight hours
+and the full fresh campaign 24 hours. These are frozen limits, not speed claims.
+Only unused, owned private storage views/forwards may be renewed before the run.
+
+Eight complete native command shapes reached the expected arithmetic guard
+before model/device execution: three on Lucy and five on Astor. Three controller
+checks passed: reproducible IDs that bind changed continuations, refusal of
+damaged acknowledged result identity/state and refusal to stop a process with a
+different command. These checks do not establish inference quality.
+
+`predata-manifest.json`, `predata-verification.json`, `phases.log` and the raw
+receipts are retained under the fixture root. The existing controller owns that
+root; do not launch another controller there. A changed or repeated campaign
+needs a fresh root and a new pre-data seal. E6 orchestration, endpoint integration
+and E7 capacity/performance remain separate work.
