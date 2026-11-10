@@ -1,10 +1,49 @@
 # Distributed fabric checkpoint
 
+## Current gate status
+
+Verified 10 November 2026 at 01:43 CET, branch `feat/distributed-experts`.
+This table is the authoritative current summary of the
+[E0–E8 acceptance gates](NETWORK_SHARDED_DEEPSEEK_PLAN.md#6-success-gates-and-dependency-order).
+Update it from completed receipts and live process state when a campaign advances.
+Historical statements below do not override it. A bounded pass is not full-model
+quality, capacity, performance or release acceptance.
+
+| Gate | Current status | Verified scope and remaining work |
+| --- | --- | --- |
+| E0 — artifacts, machines and budgets | PARTIAL | Both hosts verified all seven pinned files; native model/pack and six-expert identities match. Assigned cut20 fits the tested budgets. Final hardware/multi-pass memory checks remain open. |
+| E1 — expert adapter and Qwen regression | PARTIAL | GPU-resident DeepSeek Q8_K expert parity passed 48 cases in each direction across eight format pairs. Bounded Qwen default/tiered parity passed. Repeated Qwen recovery and the 5% performance-regression gate remain open. |
+| E2 — layer-state replay | PASS, bounded | HIP cuts20/24 passed 128-step exact replay/state checks; assigned-only cut20 replay passed. This is same-backend state evidence, not mixed-backend quality. |
+| E3 — network layer-only inference | PARTIAL | Two mixed-host 128-step probes, EOS, restart, stale-session rejection and exact fresh EOS replay passed. Memory observations stayed within limits; VRAM sampling is not an exact allocator peak. Mixed-host layer loss is queued; the HIP-only loss control passed. |
+| E4 prerequisite — tiered expert arithmetic | RUNNING | CUDA-to-HIP passed 48 cases, all eight format pairs and actual GPU/RAM/mapped execution with no fallback. HIP-to-CUDA is running; the bidirectional gate is not yet passed. |
+| E4 — hybrid layers plus remote MoE | QUEUED | Matched layer-only/empty-ownership/real-ownership and expert-loss fixtures are sealed. Combined inference, same-token three-tier coverage and native expert fallback have not passed. |
+| E5 — numerical and task quality | NOT RUN to acceptance | Analysis tools are tested. Native teacher-forced/reset control is queued; the larger CPU/2K control is prepared. Fresh five-prompt/1,000-position and eight-task acceptance remains open. |
+| E6 — network orchestrator | PREPARATION ONLY | Read-only inventory and draft audit passed their checks. Calibrated ranking, deterministic executable plans and transactional installation remain open. |
+| E7 — capacity, speed and faults | NOT RUN | Functional/usable C1 and paired speed gates remain open. C2 model-size scaling is a separate follow-up, not an initial 2.00-bpw checkpoint claim. |
+| E8 — reproducible release checkpoint | NOT READY | Required quality, orchestration, capacity/performance and final hardware evidence is incomplete. |
+
+Current evidence is recorded in the completed mixed-host and fixed-budget
+`summary.json` files and the tiered-worker campaign's live `phases.log`/native
+logs. Their full `/var/tmp/strata-deepseek-…/` locations are retained in the
+corresponding historical entries below. `RUNNING` means the named campaign was
+confirmed live at the verification time; `QUEUED` is not execution evidence.
+
+## Historical checkpoints
+
+The entries below preserve observations, failures and preparation notes from
+earlier source snapshots. Phrases such as “NOT RUN”, “pending”, “blocked” and
+“not yet qualified” describe the state **when that entry was written**. Consult
+the current gate table above before deciding what to implement or rerun. Retained
+negative trials and their raw exits remain evidence; they are not erased by a
+later pass.
+
+### Historical: chronology through 10 November 2026, 01:32 CET
+
 Updated 10 November 2026. Source branch `feat/distributed-experts`. The stock
 smoke below used `3c4f7ff8`; later campaigns retain their own source snapshots
 and binary hashes. Strata's existing node-local staging remains authoritative.
 
-Latest mixed-host checkpoint, 10 November at 01:09 CET: two distinct 128-step
+Mixed-host checkpoint recorded 10 November at 01:09 CET: two distinct 128-step
 probes, normal EOS, actual CUDA worker restart and stale-incarnation rejection
 passed. The fresh HIP-prefix EOS request reproduced the initial mixed-host
 EOS history and every raw logit row exactly. Both long probes explicitly ignored
@@ -59,7 +98,7 @@ The bidirectional tiered-worker matrix started at 01:16; its first HIP worker
 verified the stock four-shard identity at 01:27 and the CUDA client began hashing.
 Its arithmetic result remains pending. Each campaign retains frozen binaries.
 
-## Prepared combined test and resource collector
+### Historical: Prepared combined test and resource collector
 
 On 10 November, the new E4 static fixture was sealed in
 `/var/tmp/strata-deepseek-e4-static-20261110-idle2h/` and queued behind the allocation
@@ -97,7 +136,7 @@ to overwrite an existing receipt passed. Astor's first command exited 127 becaus
 Receipts are in `/var/tmp/strata-network-inventory-20261110/`. Observations are
 explicitly uncalibrated. No E6 ranking, reservation or READY admission is claimed.
 
-## E5 capture preparation
+### Historical: E5 capture preparation
 
 `c40fac77` adds explicit per-request greedy/teacher-forced modes to the opt-in
 native harness. CUDA/HIP builds and 46 pre-load admission cases per host passed,
@@ -146,7 +185,7 @@ DS4R provenance; no successful generation may be reported. Its partial-capture
 parser was checked on a synthetic subset of existing native rows, including a
 rejected altered session. The actual mixed-host loss run remains pending.
 
-## Qwen: bounded tiered-worker milestone completed
+### Historical: Qwen: bounded tiered-worker milestone completed
 
 The opt-in worker can acknowledge more experts than fit in GPU memory and use
 the native CPU pool for RAM and mapped GGUF experts. All 10,240 Qwen experts
@@ -155,7 +194,7 @@ passed the bounded expert fixtures. Full-model functional and failure tests
 completed; output-quality qualification remains open. See
 [DISTRIBUTED_EXPERTS.md](DISTRIBUTED_EXPERTS.md).
 
-## DeepSeek: stock HIP smoke passed; CUDA primary remains blocked
+### Historical: DeepSeek: stock HIP smoke passed; CUDA primary remains blocked
 
 The pinned ISTA-DAS 2.00-bpw seven-file set (256,816,878,701 bytes) is downloaded
 in `/mnt/storage/strata-models/deepseek41-ist-das-2.00bpw`. All seven files
@@ -209,7 +248,7 @@ DeepSeek inference is not qualified. The DeepSeek adapter below has one bounded
 cross-vendor expert pass using the existing kernels. Full-model acceptance is
 separate. No new local cache or quantization implementation was added.
 
-## E0/E1 implementation checkpoint
+### Historical: E0/E1 implementation checkpoint
 
 The [execution plan](NETWORK_SHARDED_DEEPSEEK_PLAN.md) is being implemented.
 The [layer-state inventory](DEEPSEEK_LAYER_STATE.md) records source ownership,
@@ -314,7 +353,7 @@ the two-cut, 128-decode-step E2 gate. Both instances still load full
 dense weights; assigned-only loading and separate-process network execution
 remain E3 work. See [the probe contract](DEEPSEEK_LAYER_STATE.md#native-executor-probe).
 
-## E3 assigned-only allocation probe
+### Historical: E3 assigned-only allocation probe
 
 The first opt-in range loader has load-only receipts for the proposed cut 20.
 It uses the existing native mapped CPU experts, with six experts per token,
@@ -366,13 +405,13 @@ controller wrote its successful acceptance ledger. The outer zsh exit-recording
 command then failed because `status` is read-only; that wrapper failure is
 retained separately in `wrapper.exit`/`wrapper-failure.txt`.
 
-## Other unfinished work
+### Historical: Other unfinished work
 
 `tools/fabric/orchestrator.py` and `docs/KIMI_K3_FEASIBILITY.md` are untracked
 work inherited from an earlier continuation. Their presence does not establish
 G2 or G8 acceptance. Kimi implementation remains gated by DeepSeek qualification.
 
-## E3 layer-delivery protocol checkpoint
+### Historical: E3 layer-delivery protocol checkpoint
 
 The separate DS4L v1 client/service wraps DS4B captures, DS4R results and the
 existing delivery session. It pins the worker executable and complete layer
@@ -389,7 +428,7 @@ network library built in the CUDA and HIP build trees. See
 [the delivery contract](DEEPSEEK_LAYER_RPC.md). Native TCP adapters and connected
 inference are NOT RUN; these tests do not advance the E3 inference gate.
 
-## Native TCP layer harness startup
+### Historical: Native TCP layer harness startup
 
 The opt-in `deepseek_layer_tcp_test` builds on CUDA and HIP. Its suffix invokes
 native `replay_boundary()` and returns the actual native position/logits. Its
@@ -421,7 +460,7 @@ prompt, normal EOS, native restart/loss behavior, same-backend TCP control and
 measured memory bounds remain required. E4 hybrid experts, E5 quality and the
 orchestrator/capacity/performance gates remain open.
 
-## Bounded multiple-request harness
+### Historical: Bounded multiple-request harness
 
 The newer harness can retain one loaded model for up to sixteen explicitly
 listed requests/connections. Each request resets native state, negotiates a fresh
@@ -442,7 +481,7 @@ pinned DeepSeek tokenizer and frozen before cross-host output was observed, in
 `/var/tmp/strata-deepseek-e3-functional-fixtures-20261109/`. Their token IDs roundtrip
 exactly. They are E3 fixtures and are excluded from the held-out E5 quality set.
 
-## Synchronous native expert dispatch preparation
+### Historical: Synchronous native expert dispatch preparation
 
 Expert RPC previously covered only the asynchronous native CPU-miss lane.
 The synchronous host-routed window path now uses the same small dispatch helper.
@@ -468,7 +507,7 @@ Live combined layer/expert execution has NOT RUN; admission and
 build receipts are separate from E4 acceptance. The currently running E3
 campaigns retain their older, separately frozen binaries.
 
-## Teacher-forced capture preparation
+### Historical: Teacher-forced capture preparation
 
 The native layer harness now accepts a fixed target-ID file for each request.
 It records the logit window before each target and consumes that target rather
@@ -482,7 +521,7 @@ Receipts are in `/var/tmp/strata-deepseek-teacher-forcing-20261109/`.
 The active E3 control and queued mixed-host campaign use their earlier frozen
 executables and do not include this change.
 
-## Fixed native GPU expert budget preparation
+### Historical: Fixed native GPU expert budget preparation
 
 The assigned-layer profile now permits GPU expert residency through Strata's
 existing allocator. The harness accepts an explicit `--expert-vram-mib` limit;
@@ -497,7 +536,7 @@ fixture and combined hybrid arithmetic have NOT RUN. Receipts are in
 `/var/tmp/strata-deepseek-local-gpu-budget-20261109/`. No E4, E5, capacity or
 performance pass is asserted by these build/admission checks.
 
-## DeepSeek expert-worker tier preparation
+### Historical: DeepSeek expert-worker tier preparation
 
 The DeepSeek worker now connects the existing bounded GPU/RAM/mapped placement
 to its native CPU row functions and CPU pool. CUDA/HIP worker and fixture builds
@@ -510,7 +549,7 @@ inference remain NOT RUN to acceptance. The new opt-in fixture uses fresh
 connections for each immutable layer plan; its seeded cases and tolerances stay
 unchanged. See [the tier contract and commands](DEEPSEEK_EXPERT_TIERS.md).
 
-## Same-prefix numerical scorer preparation
+### Historical: Same-prefix numerical scorer preparation
 
 The comparison tool now validates complete native teacher-forced trajectories
 and scores fixed-prefix logits. An explicit greedy-reference mode preserves and
