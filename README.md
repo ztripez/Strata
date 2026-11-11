@@ -31,7 +31,7 @@ and RX 6800. These are source-checkout experiments, separate from the upstream
 installers described below.
 
 **[Fabric overview, demonstrated models and limitations](docs/FABRIC.md)** ·
-[Reddit draft](docs/REDDIT_FABRIC_DRAFT.md) · [Upstream Strata](https://github.com/Niko1221/Strata)
+[Upstream Strata](https://github.com/Niko1221/Strata)
 
 
 **Free, open source, and yours to run.** Use Strata on your desktop or with your favorite coding tools. No account needed.

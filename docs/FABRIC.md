@@ -103,12 +103,6 @@ Original failures and strict gate results remain in the model reports. The
 chronological [fabric status log](DISTRIBUTED_FABRIC_STATUS.md) is supporting
 history; use this page for the public overview and per-model evidence for detail.
 
-## Sharing this work
-
-[The Reddit draft](REDDIT_FABRIC_DRAFT.md) describes the completed demonstrations
-and their limits. Posting is a separate user action. Credit the upstream Strata
-project; this fork adds experimental distributed execution and Kimi bring-up.
-
 ## Merged-source verification
 
 [The integration receipt](../evidence/fabric-merge/validation.json) records CUDA
