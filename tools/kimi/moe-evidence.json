@@ -1,0 +1,65 @@
+{
+  "input": "one deterministic Gaussian hidden state, seed 42, float32, width 7168",
+  "expert_ids": [
+    [
+      374,
+      74,
+      444,
+      144,
+      77,
+      305,
+      166,
+      224,
+      860,
+      269,
+      76,
+      420,
+      19,
+      709,
+      567,
+      511
+    ]
+  ],
+  "routing_weight_min": 0.062393609434366226,
+  "routing_weight_max": 0.06253541260957718,
+  "comparison": {
+    "logits": {
+      "max_abs": 2.09808349609375e-05,
+      "relative_rms": 8.005862355275895e-07
+    },
+    "weights": {
+      "max_abs": 0.0,
+      "relative_rms": 0.0
+    },
+    "latent": {
+      "max_abs": 8.404254913330078e-06,
+      "relative_rms": 8.061269909376279e-07
+    },
+    "expert_outputs": {
+      "max_abs": 5.1021575927734375e-05,
+      "relative_rms": 1.3291598861542298e-06
+    },
+    "reduced": {
+      "max_abs": 1.1622905731201172e-05,
+      "relative_rms": 1.0631932809701539e-06
+    },
+    "normalized": {
+      "max_abs": 2.8870999813079834e-08,
+      "relative_rms": 1.0620985904097324e-06
+    },
+    "routed": {
+      "max_abs": 5.960464477539063e-08,
+      "relative_rms": 1.2113391676393803e-06
+    },
+    "shared": {
+      "max_abs": 1.33514404296875e-05,
+      "relative_rms": 1.3731748822465306e-06
+    },
+    "output": {
+      "max_abs": 1.3232231140136719e-05,
+      "relative_rms": 1.3733832702200743e-06
+    }
+  },
+  "receipt": "/mnt/work/kimi-k3-moe/result.npz",
+  "limits": "MoE sublayer only; independent float32 CPU formulations; no official full-model parity or MXFP8 activation emulation"
+}
