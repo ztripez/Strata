@@ -384,7 +384,13 @@ template <int T>
 __device__ __forceinline__ void deq8(const uint8_t* __restrict__ row, int kb, int p, const uint32_t* tab, float* w) {
     const int ib = kb & 7;
     const uint8_t* b = row + (size_t) (kQK<T> == 32 ? kb : kb >> 3) * Ty<T>::B;
-    if constexpr (T == kIQ2_XXS) {
+    if constexpr (T == kMXFP4) {
+        Sub decoded;
+        decode_b<T>(b, 0, tab, decoded);
+#pragma unroll
+        for (int j = 0; j < 8; ++j)
+            w[j] = decoded.d * (float) (int8_t) ((uint32_t) decoded.q[2 * p + j / 4] >> (8 * (j & 3)));
+    } else if constexpr (T == kIQ2_XXS) {
         const uint8_t* q = b + 2 + 8 * ib;
         const uint32_t a1 = ld2(q + 4);
         const uint2 g = ((const uint2*) tab)[q[p]];
@@ -1107,6 +1113,7 @@ bool tc_ok() {   // as ds4_gguf.cu's: sm_70 and later, STRATA_DS4_NO_TC=1 keeps 
 // F(T) for the type t at run time; false when it is not one of these
 #define DS4_IQ_SWITCH(t, F)          \
     switch (t) {                     \
+        case kMXFP4: F(kMXFP4); break;   \
         case kIQ2_XXS: F(kIQ2_XXS); break; \
         case kIQ2_XS: F(kIQ2_XS); break;   \
         case kIQ2_S: F(kIQ2_S); break;     \
@@ -1497,10 +1504,11 @@ bool supported(int t) {
     // The MSL kernels (metal/src/engine/msl/ds4_iq.metal) implement the 2.0-bit types plus IQ1_M; IQ1_S and IQ4_NL
     // have CUDA kernels here but no Metal ones.  Saying so makes those layers "cpu only" (ds4_model.cu, expert_layout),
     // so their experts stay on the CPU lane instead of stopping in "kernel launch with no Metal dispatch".
-    if (t == kIQ4_NL) return false;   // (IQ1_S: ds4_iq1s_mvn + the tile kernel since the Unsloth sets)
+    if (t == kIQ4_NL || t == kMXFP4) return false;   // mixed MXFP4 has no Metal IQ dispatch
 #endif
     // the types the kernels below are instantiated for (DS4_IQ_SWITCH + the trellis ones + the dense K-quants)
     switch (t) {
+        case kMXFP4:
         case kIQ2_XXS: case kIQ2_XS: case kIQ2_S: case kIQ3_XXS: case kIQ3_S: case kIQ4_XS:
         case kIQ1_S: case kIQ1_M: case kIQ4_NL:
         case kQ4_K: case kQ5_K: case kQ6_K: case kQ2_K: case kQ3_K:
@@ -1513,13 +1521,14 @@ bool supported(int t) {
 bool known(int t) { return block_bytes(t) > 0; }
 
 int block_values(int t) {
-    if (t == kIQ4_NL) return 32;   // (ggml's QK4_NL: the only type here whose block is not 256 values)
+    if (t == kIQ4_NL || t == kMXFP4) return 32;
     return is_tq(t) ? 128 : block_bytes(t) > 0 ? 256 : 0;
 }
 
 int block_bytes(int t) {
     if (is_tq(t)) return 2 + 4 * tq_kbits(t);
     switch (t) {
+        case kMXFP4: return Ty<kMXFP4>::B;
         case kIQ2_XXS: return Ty<kIQ2_XXS>::B;
         case kIQ2_XS: return Ty<kIQ2_XS>::B;
         case kIQ2_S: return Ty<kIQ2_S>::B;
@@ -1540,6 +1549,7 @@ int block_bytes(int t) {
 
 const char* name(int t) {
     switch (t) {
+        case kMXFP4: return "MXFP4";
         case kTQK6: return "TQK6";
         case kTQK7: return "TQK7";
         case kTQK5X: return "TQK5X";

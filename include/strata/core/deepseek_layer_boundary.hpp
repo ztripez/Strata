@@ -7,6 +7,12 @@
 
 namespace strata::core {
 
+/// Layer boundaries supported by the bounded DeepSeek execution adapter.
+/// Numerical acceptance is recorded separately for each placement.
+constexpr bool deepseek_layer_supported_cut(uint32_t cut) {
+    return cut == 16 || cut == 18 || cut == 20 || cut == 24 || cut == 28;
+}
+
 /// Portable capture record for E2 local replay. This is not an expert-v1 message
 /// or a complete layer RPC/session protocol. Every size comes from a trusted
 /// local model layout; received lengths cannot override that layout.

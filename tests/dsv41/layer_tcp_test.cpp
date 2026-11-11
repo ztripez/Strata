@@ -19,6 +19,9 @@ using strata::ds4::Model;
 namespace {
 using Clock=std::chrono::steady_clock;
 namespace R=deepseek_layer_rpc_detail;
+// Measurement-only mode leaves model math unchanged and skips bulky quality dumps.
+bool e7_profile() {static const bool enabled=std::getenv("STRATA_E7_PROFILE")!=nullptr;return enabled;}
+uint64_t elapsed_us(Clock::time_point start) {return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(Clock::now()-start).count());}
 bool numeric_endpoint(const std::string &endpoint) {
     std::string host;uint16_t port=0;
     if(!expert_worker_parse_host_port(endpoint,host,port)) return false;
@@ -72,8 +75,16 @@ int greedy(const std::vector<float> &logits,int vocab) {
 }
 DeepSeekLayerContract contract(Model &model,int cut,const std::array<uint8_t,32> &planned) {
     DeepSeekLayerContract c;std::string e;
-    std::fprintf(stderr,"E3 TCP: hashing actual loaded pack mappings; identity domains DS4M1/DS4P1\n");
-    check(model.boundary_artifacts(c.identity.model,c.identity.pack,e),e);
+    if (std::getenv("STRATA_TRUST_VERIFIED_MODEL_SHA256")) {
+        const char *model_id=std::getenv("STRATA_TRUST_LAYER_MODEL_SHA256");
+        const char *pack_id=std::getenv("STRATA_TRUST_LAYER_PACK_SHA256");
+        check(model_id && pack_id,"trusted layer model/pack identities are required");
+        c.identity.model=unhex(model_id);c.identity.pack=unhex(pack_id);
+        std::fprintf(stderr,"E3 TCP: trusted prior model/pack verification; mapped bytes NOT rehashed\n");
+    } else {
+        std::fprintf(stderr,"E3 TCP: hashing actual loaded pack mappings; identity domains DS4M1/DS4P1\n");
+        check(model.boundary_artifacts(c.identity.model,c.identity.pack,e),e);
+    }
     c.identity.epoch=1;c.identity.next_layer=static_cast<uint32_t>(cut);
     c.effective_experts=6;c.arithmetic=static_cast<uint32_t>(ExpertWorkerArithmetic::DEEPSEEK_IQ_Q8K);
     ExpertWireWriter plan;plan.put("strata-layer-only-plan/1");
@@ -82,8 +93,10 @@ DeepSeekLayerContract contract(Model &model,int cut,const std::array<uint8_t,32>
     return c;
 }
 void receipt(const char *role,const DeepSeekLayerContract &c,const std::array<uint8_t,32> &binary) {
-    std::printf("E3_TCP_IDENTITY role=%s model_identity=DS4M1 pack_identity=DS4P1 effective_experts=6 arithmetic=%u cut=%u model_sha256=%s pack_sha256=%s plan_sha256=%s binary_sha256=%s\n",
-        role,c.arithmetic,c.identity.next_layer,hex(c.identity.model).c_str(),hex(c.identity.pack).c_str(),hex(c.identity.plan).c_str(),hex(binary).c_str());
+    const bool raw=std::getenv("STRATA_TRUST_VERIFIED_MODEL_SHA256") && std::getenv("STRATA_LAYER_RAW_IDENTITY");
+    std::printf("E3_TCP_IDENTITY role=%s model_identity=%s pack_identity=%s effective_experts=6 arithmetic=%u cut=%u model_sha256=%s pack_sha256=%s plan_sha256=%s binary_sha256=%s\n",
+        role,raw ? "SHA256-GGUF-CONCAT":"DS4M1",raw ? "SHA256-PACK-BYTES":"DS4P1",
+        c.arithmetic,c.identity.next_layer,hex(c.identity.model).c_str(),hex(c.identity.pack).c_str(),hex(c.identity.plan).c_str(),hex(binary).c_str());
     std::fflush(stdout);
 }
 void run_suffix(Model &model,int cut,const std::string &endpoint,int timeout_ms,int accept_ms,int connections,const std::array<uint8_t,32> &planned,const std::filesystem::path &out) {
@@ -100,7 +113,8 @@ void run_suffix(Model &model,int cut,const std::string &endpoint,int timeout_ms,
     DeepSeekLayerService service(caps,[&](const auto &identity,std::string &e) {
         model.reset();return model.configure_boundary_probe(cut,identity,{},e);
     },[&](const auto &capture,uint32_t rows,DeepSeekLayerResult &result,std::string &e) {
-        const auto deadline=Clock::now()+std::chrono::milliseconds(timeout_ms);
+        const auto started=Clock::now();const auto before=model.stats();
+        const auto deadline=started+std::chrono::milliseconds(timeout_ms);
         model.set_cancel([&] {return Clock::now()>=deadline;});
         bool ok=false;
         try {ok=model.replay_boundary(capture,static_cast<int>(rows),e);} catch(...) {model.set_cancel({});throw;}
@@ -108,6 +122,12 @@ void run_suffix(Model &model,int cut,const std::string &endpoint,int timeout_ms,
         if(Clock::now()>=deadline) {e="native suffix computation deadline exceeded";return false;}
         if(!model.logits(result.logits)) {e="native suffix did not publish logits";return false;}
         result.request=capture.header;result.logits_rows=rows;result.committed_position=static_cast<uint64_t>(model.pos());
+        if(e7_profile()) {
+            const auto after=model.stats();
+            std::printf("E7_SUFFIX session=%llu sequence=%llu position=%llu rows=%u native_us=%llu cpu_ms=%.6f layer_ms=%.6f head_ms=%.6f engram_ms=%.6f\n",
+                static_cast<unsigned long long>(capture.header.session),static_cast<unsigned long long>(capture.header.sequence),static_cast<unsigned long long>(capture.header.position),rows,
+                static_cast<unsigned long long>(elapsed_us(started)),after.cpu_ms-before.cpu_ms,after.layer_ms-before.layer_ms,after.head_ms-before.head_ms,after.engram_ms-before.engram_ms);std::fflush(stdout);
+        }
         ++executed;capture_bytes+=encode_deepseek_boundary(c.layout,capture).size();return true;
     });
     std::string host;uint16_t port=0,bound=0;check(expert_worker_parse_host_port(endpoint,host,port),"invalid numeric suffix endpoint");
@@ -136,6 +156,9 @@ void run_suffix(Model &model,int cut,const std::string &endpoint,int timeout_ms,
 void run_generation(Model &model,const DeepSeekLayerContract &c,const std::vector<int> &prompt,const std::vector<int> &targets,int steps,bool ignore_eos,
                     const std::filesystem::path &out,DeepSeekLayerClient *client,int cut,uint64_t &session_floor) {
     std::string error;DeepSeekLayerResult last;uint64_t windows=0,capture_bytes=0;std::vector<float> logits;
+    DeepSeekLayerTiming timing;
+    bool prefilling=true;
+    const auto stats_before=model.stats();
     if(client) {
         auto identity=c.identity;
         const uint64_t floor=std::max(session_floor,client->capabilities().last_session);
@@ -143,9 +166,9 @@ void run_generation(Model &model,const DeepSeekLayerContract &c,const std::vecto
         identity.session=floor+1;session_floor=identity.session;
         check(client->begin(identity.session,error),error);
         check(model.configure_boundary_probe(cut,identity,[&](const auto &capture,std::string &e) {
-            DeepSeekLayerResult result;if(!client->execute(capture,1,result,e)) return false;
+            DeepSeekLayerResult result;if(!client->execute(capture,1,result,e,e7_profile() ? &timing:nullptr)) return false;
             // Only acknowledged output reaches the coordinator or its evidence.
-            preserve(out/("result-"+std::to_string(windows+1)+".ds4r"),encode_deepseek_layer_result(c.layout,result));
+            if(!e7_profile()) preserve(out/("result-"+std::to_string(windows+1)+".ds4r"),encode_deepseek_layer_result(c.layout,result));
             last=std::move(result);capture_bytes+=encode_deepseek_boundary(c.layout,capture).size();return true;
         },error),error);
     }
@@ -155,22 +178,30 @@ void run_generation(Model &model,const DeepSeekLayerContract &c,const std::vecto
     std::ofstream forced;
     if(!targets.empty()) {forced.open(out/"targets.jsonl");check(static_cast<bool>(forced),"cannot create teacher-forced target history");}
     auto advance=[&](const int *ids,int count) {
+        const auto started=Clock::now();const auto position=model.pos();
         check(model.feed(ids,count,client ? 0:1,error),error);
         if(client) {check(last.committed_position==static_cast<uint64_t>(model.pos()),"prefix/suffix committed positions differ");logits=last.logits;}
         else check(model.logits(logits),"reference has no logits");
+        if(e7_profile()) {
+            std::printf("E7_WINDOW role=%s phase=%s position=%lld rows=%d feed_us=%llu rpc_us=%llu execute_us=%llu ack_us=%llu tx_bytes=%llu rx_bytes=%llu\n",
+                client ? "prefix":"reference",prefilling ? "prefill":"decode",static_cast<long long>(position),count,
+                static_cast<unsigned long long>(elapsed_us(started)),static_cast<unsigned long long>(timing.total_us),static_cast<unsigned long long>(timing.execute_us),static_cast<unsigned long long>(timing.ack_us),static_cast<unsigned long long>(timing.tx_bytes),static_cast<unsigned long long>(timing.rx_bytes));std::fflush(stdout);
+        }
         const int next=greedy(logits,model.vocab());
         if(!client) check(model.sample(0,1,0,0,1,windows)==next,"coordinator greedy selection differs from native sampler");
-        ++windows;preserve(out/("window-"+std::to_string(windows)+".f32"),logits);
+        ++windows;if(!e7_profile()) preserve(out/("window-"+std::to_string(windows)+".f32"),logits);
         history<<"{\"window\":"<<windows<<",\"position\":"<<model.pos()<<",\"tokens\":[";
         for(int i=0;i<count;++i) {if(i) history<<',';history<<ids[i];}
         history<<"],\"next\":"<<next<<"}\n";history.flush();check(static_cast<bool>(history),"could not persist window history");
         return next;
     };
+    const auto request_started=Clock::now();
     int next=-1;
     for(size_t offset=0;offset<prompt.size();) {
         const int count=static_cast<int>(std::min<size_t>(16,prompt.size()-offset));
         next=advance(prompt.data()+offset,count);offset+=static_cast<size_t>(count);
     }
+    const uint64_t prefill_us=elapsed_us(request_started);const auto decode_started=Clock::now();prefilling=false;
     int generated=0;bool eos=false;
     for(;generated<steps;++generated) {
         if(!targets.empty()) {
@@ -192,6 +223,12 @@ void run_generation(Model &model,const DeepSeekLayerContract &c,const std::vecto
         next=advance(&next,1);
     }
     if(client) check(client->close(error),error);
+    if(e7_profile()) {
+        const auto after=model.stats();
+        std::printf("E7_REQUEST role=%s prompt_tokens=%zu generated=%d prefill_us=%llu decode_us=%llu cpu_ms=%.6f layer_ms=%.6f head_ms=%.6f engram_ms=%.6f\n",
+            client ? "prefix":"reference",prompt.size(),generated,static_cast<unsigned long long>(prefill_us),static_cast<unsigned long long>(elapsed_us(decode_started)),
+            after.cpu_ms-stats_before.cpu_ms,after.layer_ms-stats_before.layer_ms,after.head_ms-stats_before.head_ms,after.engram_ms-stats_before.engram_ms);std::fflush(stdout);
+    }
     memory("finished");
     if(!targets.empty()) {
         std::printf("E5_TCP_TEACHER_FORCING role=%s targets=%d windows=%llu capture_bytes=%llu CAPTURED; quality/performance NOT QUALIFIED\n",
@@ -247,7 +284,7 @@ int main(int argc,char **argv) {
             "usage: suffix PACK CUT LISTEN RPC_MS ACCEPT_MS CONNECTIONS OUT | prefix PACK CUT ENDPOINT WORKER_SHA RPC_MS [PROMPT_IDS DECODE IGNORE_EOS OUT]... | reference PACK [PROMPT_IDS DECODE IGNORE_EOS OUT]...");
         check(!suffix || !decode_mode_provided,"decode mode belongs to prefix/reference requests, not the suffix service");
         check(setenv("DS4_SYNC","1",1)==0 && setenv("DS4_STREAM","0",1)==0,"cannot select native synchronous windows");
-        const int cut=reference ? 20:number(argv[3],24);check(cut==20 || cut==24,"unsupported native layer cut");
+        const int cut=reference ? 20:number(argv[3],28);check(deepseek_layer_supported_cut(cut),"unsupported native layer cut");
         const int timeout_ms=suffix ? number(argv[5],600000):prefix ? number(argv[6],600000):600000;
         const int accept_ms=suffix ? number(argv[6],7200000):0;
         const int connections=suffix ? number(argv[7],16):0;

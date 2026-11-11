@@ -50,7 +50,10 @@ strata::ds4::Options options(const N::ProcessConfig &c) {
 }
 DeepSeekLayerContract contract(Model &model,const N::ProcessConfig &c) {
     DeepSeekLayerContract result;std::string error;
-    N::require(model.boundary_artifacts(result.identity.model,result.identity.pack,error),error);
+    if (std::getenv("STRATA_TRUST_VERIFIED_MODEL_SHA256")) {
+        result.identity.model=c.model;result.identity.pack=c.pack_identity;
+        std::fprintf(stderr,"ds4-layer-artifacts: mode=trusted-prior-verification; mapped bytes NOT rehashed\n");
+    } else N::require(model.boundary_artifacts(result.identity.model,result.identity.pack,error),error);
     N::require(result.identity.model==c.model && result.identity.pack==c.pack_identity,"actual mapped model/pack differs from installed plan");
     result.identity.plan=c.plan;result.identity.epoch=c.plan_epoch.value_or(1);result.identity.next_layer=static_cast<uint32_t>(c.cut);
     result.effective_experts=6;result.arithmetic=static_cast<uint32_t>(ExpertWorkerArithmetic::DEEPSEEK_IQ_Q8K);

@@ -29,8 +29,8 @@ size_t limit(R::Type type) {
 }
 void validate_contract(const DeepSeekLayerContract &c) {
     const auto &h=c.identity;
-    D::require(!h.session && !h.sequence && !h.position && !h.rows && (h.next_layer==20 || h.next_layer==24),
-               "layer contract is not a canonical fresh cut-20/24 identity");
+    D::require(!h.session && !h.sequence && !h.position && !h.rows && deepseek_layer_supported_cut(h.next_layer),
+               "layer contract is not a canonical fresh supported-cut identity");
     auto first=h;first.session=1;first.sequence=1;first.rows=1;
     D::layout(c.layout,first);
     D::require(c.effective_experts==6 && c.arithmetic==static_cast<uint32_t>(ExpertWorkerArithmetic::DEEPSEEK_IQ_Q8K),

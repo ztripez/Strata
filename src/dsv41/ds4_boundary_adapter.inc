@@ -56,12 +56,12 @@ bool configure_boundary_probe(int cut, const strata::core::DeepSeekBoundaryHeade
         err = "boundary role/cut disagrees with the loaded layer range";
         return false;
     }
-    if ((cut != 20 && cut != 24) || pos != 0 || !toks.empty() || !ctoks.empty() || probe_cut >= 0 || identity.session <= probe_last_session ||
+    if (!strata::core::deepseek_layer_supported_cut(cut) || pos != 0 || !toks.empty() || !ctoks.empty() || probe_cut >= 0 || identity.session <= probe_last_session ||
         devs.size() != 1 || par || !sync_decode || chunk != 0 || g.nl != 40 || g.dim != 5120 || g.hc != 4 ||
         g.n_mtp || o.seqs != 1 || o.vision || o.expert_cache || !std::isfinite(o.vram_experts) ||
         o.vram_experts < 0 || o.vram_experts > 1 || !pk.gguf || !file_experts || store ||
         disk_skip_w > 0 || ram_skip_w > 0) {
-        err = "boundary probe requires reset, a fresh session, cut 20/24, one synchronous GPU, explicit expert VRAM share in [0,1], windows, no expert cache/store/skip/vision/DSpark";
+        err = "boundary probe requires reset, a fresh session, supported cut, one synchronous GPU, explicit expert VRAM share in [0,1], windows, no expert cache/store/skip/vision/DSpark";
         return false;
     }
     for (int il = 0; il < g.nl; ++il)

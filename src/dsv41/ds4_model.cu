@@ -2523,12 +2523,13 @@ struct Model::Impl {
             off += align256(bytes) + (store_gb() > 0 ? ExpertStore::kSlack : 0);   // (the store's aligned reads spill into the gaps)
         }
         l.lay.fmt = gg::kFmtMXFP4;
-        if (!gg::mx_experts(l.lay) && (gg::expert_type(l.lay, 0) != gg::expert_type(l.lay, 1) ||
-                                       gg::expert_type(l.lay, 0) == gg::kTypeMXFP4 ||
-                                       gg::expert_type(l.lay, 2) == gg::kTypeMXFP4)) {
+        const bool mixed_mx = !gg::mx_experts(l.lay) &&
+            (gg::expert_type(l.lay, 0) == gg::kTypeMXFP4 || gg::expert_type(l.lay, 2) == gg::kTypeMXFP4);
+        if (gg::expert_type(l.lay, 0) != gg::expert_type(l.lay, 1) ||
+            (mixed_mx && !gg::iq::supported(gg::kTypeMXFP4))) {
             err = P + ": gate / up / down of types " + gg::type_name(l.lay.K[0]) + " / " +
                   gg::type_name(l.lay.K[1]) + " / " + gg::type_name(l.lay.K[2]) +
-                  " (gate and up must match; MXFP4 does not mix with the others)";
+                  " (gate and up must match; mixed MXFP4 requires device support)";
             return false;
         }
         l.blob = off;
@@ -2777,15 +2778,15 @@ struct Model::Impl {
         }
 #if defined(STRATA_NETWORK_EXPERTS)
         if (layer_range() && (g.nl != 40 || !pk.gguf ||
-            !((o.layer_begin == 0 && (o.layer_end == 20 || o.layer_end == 24)) ||
-              ((o.layer_begin == 20 || o.layer_begin == 24) && o.layer_end == 40)) ||
+            !((o.layer_begin == 0 && strata::core::deepseek_layer_supported_cut(o.layer_end)) ||
+              (strata::core::deepseek_layer_supported_cut(o.layer_begin) && o.layer_end == 40)) ||
             o.gpus.size() != 1 || o.tp != 1 || o.threads || !sync_decode ||
             o.seqs != 1 || o.prefill_chunk != 0 || o.vision || o.dspark || o.dspark_auto ||
             o.experts != 6 || o.vram_experts_auto || !std::isfinite(o.vram_experts) ||
             o.vram_experts < 0 || o.vram_experts > 1 || o.expert_cache ||
             o.ssd_cache_gb != 0 || o.mmap_experts != 1 ||
             !lane_env_off() || disk_skip_w > 0 || ram_skip_w > 0)) {
-            err = "assigned-layer probe requires cut 20/24, one synchronous GPU, explicit six experts and VRAM share in [0,1], mapped CPU experts, --prefill-chunk 0, DS4_STREAM=0, no cache/store/skip/vision/DSpark";
+            err = "assigned-layer probe requires a supported cut, one synchronous GPU, explicit six experts and VRAM share in [0,1], mapped CPU experts, --prefill-chunk 0, DS4_STREAM=0, no cache/store/skip/vision/DSpark";
             return false;
         }
 #endif
@@ -9733,9 +9734,8 @@ struct Model::Impl {
                     else lane_take_win(l, ln_cls[(size_t) lc], picks, lt, next, r.ids, T);
                 }
 #if defined(STRATA_NETWORK_EXPERTS)
-                std::vector<float> network_sums;
-                std::vector<uint8_t> network_mask;
-                (void) offload_cpu_picks(l,T,&r.x[0][0],static_cast<size_t>(kMaxDim),&r.w[0][0],picks,network_sums,network_mask);
+                NetworkCpuParts network_parts;
+                (void) offload_cpu_picks(l,T,&r.x[0][0],static_cast<size_t>(kMaxDim),&r.w[0][0],picks,network_parts);
 #endif
                 std::sort(picks.begin(), picks.end());
                 for (size_t a = 0; a < picks.size();) {
@@ -9794,11 +9794,15 @@ struct Model::Impl {
                     st.cpu_experts += nslots;
                 }
 #if defined(STRATA_NETWORK_EXPERTS)
-                for (size_t t = 0; t < network_mask.size(); ++t) {
-                    if (!network_mask[t]) continue;
-                    if (!rp.cpu[t]) std::fill(rp.part[t], rp.part[t] + g.dim, 0.0f);
-                    for (int c = 0; c < g.dim; ++c) rp.part[t][c] += network_sums[t * g.dim + c];
-                    rp.cpu[t] = 1;
+                if (!network_parts.assignments.empty()) {
+                    std::vector<CpuContribution> local;
+                    for (const auto& entry:ents)
+                        for (int i=0;i<entry.n;++i) {
+                            const int slot=entry.slot0+i;
+                            local.push_back({entry.e,tok_of[slot],wv[slot],c_yd.data()+static_cast<size_t>(slot)*g.dim});
+                        }
+                    combine_network_cpu_parts(network_parts,std::move(local),T,&rp.part[0][0],kMaxDim);
+                    for (const auto& a:network_parts.assignments) rp.cpu[a.token_idx]=1;
                 }
 #endif
                 if (lc >= 0) lane_answer(ln_cls[(size_t) lc], lt);
@@ -13696,6 +13700,7 @@ struct Model::Impl {
         }
         std::vector<float> dump;
         if (dump_h != nullptr) dump.resize((size_t) T * g.nl * H * D);
+        static const bool layer_profile = std::getenv("STRATA_DS4_LAYER_PROFILE") != nullptr;
         for (int il = first_layer; il < layer_limit(); ++il) {
 #if defined(STRATA_NETWORK_EXPERTS)
             if (first_layer > 0 && cancel && cancel()) { halted = true; err = "boundary replay cancelled"; return false; }
@@ -13724,7 +13729,33 @@ struct Model::Impl {
             }
             if (!tap(devs[(size_t) l.dev], il, T, err)) return false;
             if (il == 0 && ds4_dbg("DS4_DBG_EMB")) dbg_h("after tap", devs[(size_t) l.dev], T);
+            const double layer_started = layer_profile ? now_ms() : 0;
+            const double cpu_before = layer_profile ? st.cpu_ms : 0;
+            const double gpu_wait_before = layer_profile ? st.gpu_wait_ms : 0;
+#if defined(__linux__)
+            rusage process_before{};
+            if (layer_profile && getrusage(RUSAGE_SELF, &process_before) != 0) {
+                err = "cannot sample per-layer process CPU time"; return false;
+            }
+#endif
             if (!layer(l, 0, p0, T, wplan, err)) return false;
+            if (layer_profile) {
+                std::fprintf(stderr, "DS4_LAYER_COST layer=%d position=%lld rows=%d wall_us=%.0f cpu_lane_us=%.0f gpu_wait_us=%.0f",
+                    il, (long long) p0, T, (now_ms()-layer_started)*1000,
+                    (st.cpu_ms-cpu_before)*1000, (st.gpu_wait_ms-gpu_wait_before)*1000);
+#if defined(__linux__)
+                rusage process_after{};
+                if (getrusage(RUSAGE_SELF, &process_after) != 0) {
+                    err = "cannot sample per-layer process CPU time"; return false;
+                }
+                const auto us = [](const timeval& v) { return int64_t{v.tv_sec}*1000000+v.tv_usec; };
+                std::fprintf(stderr, " process_user_us=%lld process_system_us=%lld minor_faults=%ld major_faults=%ld",
+                    (long long) (us(process_after.ru_utime)-us(process_before.ru_utime)),
+                    (long long) (us(process_after.ru_stime)-us(process_before.ru_stime)),
+                    process_after.ru_minflt-process_before.ru_minflt,process_after.ru_majflt-process_before.ru_majflt);
+#endif
+                std::fputc('\n',stderr);
+            }
             if (dump_h != nullptr) {   // DS4_DUMP_H: every layer's residual stream, for tools/ds4/compare.py --layers
                 Dev& dd = devs[(size_t) l.dev];
                 std::vector<float> hv((size_t) T * H * D);
@@ -14579,8 +14610,7 @@ struct Model::Impl {
             }
         }
 #if defined(STRATA_NETWORK_EXPERTS)
-        std::vector<float> network_sums;
-        std::vector<uint8_t> network_mask;
+        NetworkCpuParts network_parts;
         if (net_worker && !net_warned && net_worker->healthy() && !l.mtp && net_worker->holds_layer(l.il)) {
             std::vector<std::pair<int,int>> picks;
             for (int t=0;t<T;++t)
@@ -14588,7 +14618,7 @@ struct Model::Impl {
                     const int expert=h_idx[t*kPicks+slot];
                     if (l.slot[static_cast<size_t>(expert)]<0) picks.push_back({expert,t*kPicks+slot});
                 }
-            if (offload_cpu_picks(l,T,h_x,static_cast<size_t>(D),h_w,picks,network_sums,network_mask)) {
+            if (offload_cpu_picks(l,T,h_x,static_cast<size_t>(D),h_w,picks,network_parts)) {
                 for (int expert=0;expert<l.n_exp;++expert)
                     if (l.slot[static_cast<size_t>(expert)]<0) per[static_cast<size_t>(expert)].clear();
                 for (const auto pick:picks)
@@ -14601,7 +14631,7 @@ struct Model::Impl {
                         gpu+=l.slot[static_cast<size_t>(h_idx[t*kPicks+slot])]>=0;
                     for (const auto pick:picks) cpu+=pick.second/kPicks==t;
                     const int remote=l.k_exp-gpu-cpu;
-                    if (remote<0 || (remote>0 && (network_mask.empty() || !network_mask[static_cast<size_t>(t)]))) {
+                    if (remote<0 || (remote>0 && std::none_of(network_parts.assignments.begin(),network_parts.assignments.end(),[&](const auto& a){return a.token_idx==t;}))) {
                         err="network tier accounting differs from acknowledged expert coverage";return false;
                     }
                     std::fprintf(stderr,"ds4-network-tiers: layer=%d position=%lld local_gpu=%d local_cpu=%d remote=%d fallback=%d\n",
@@ -14705,14 +14735,15 @@ struct Model::Impl {
         }
         bool have_cpu_part=!ents.empty();
 #if defined(STRATA_NETWORK_EXPERTS)
-        if (!network_mask.empty()) {
-            if (!have_cpu_part) std::fill(h_part,h_part+static_cast<size_t>(T)*D,0.0f);
-            for (int t=0;t<T;++t) {
-                if (!network_mask[static_cast<size_t>(t)]) continue;
-                for (int column=0;column<D;++column)
-                    h_part[static_cast<size_t>(t)*D+column]+=network_sums[static_cast<size_t>(t)*D+column];
-                cm.cpu[t]=1;
-            }
+        if (!network_parts.assignments.empty()) {
+            std::vector<CpuContribution> local;
+            for (const auto& entry:ents)
+                for (int i=0;i<entry.n;++i) {
+                    const int slot=entry.slot0+i;
+                    local.push_back({entry.e,cpu_rows[static_cast<size_t>(slot)].first,cpu_rows[static_cast<size_t>(slot)].second,c_yd.data()+static_cast<size_t>(slot)*D});
+                }
+            combine_network_cpu_parts(network_parts,std::move(local),T,h_part,D);
+            for (const auto& a:network_parts.assignments) cm.cpu[a.token_idx]=1;
             have_cpu_part=true;
         }
 #endif
