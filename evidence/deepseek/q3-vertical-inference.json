@@ -1,0 +1,120 @@
+{
+  "milestone": "DeepSeek V4.1 Flash UD-IQ3_XXS vertical inference",
+  "status": "COMPLETE",
+  "source_root": "/var/tmp/strata-deepseek-q3-20261111/retry5",
+  "scope": "Recorded pre-merge hardware runs; not a merged-main rerun or a strict quality pass. Performance and quality refinement deferred.",
+  "execution_exit": 0,
+  "pipeline_exit": 1,
+  "task_retention": {
+    "corpus_sha256": "2ac7151f35b8c337eed1c9c5c22d56d6c039f658b6554aa24894a264c1019daf",
+    "baseline_passes": [
+      "last-assignment",
+      "multiply",
+      "prime",
+      "word-sort"
+    ],
+    "candidate_passes": [
+      "last-assignment",
+      "multiply",
+      "word-sort"
+    ],
+    "lost_baseline_passes": [
+      "prime"
+    ],
+    "scope": "task retention only; no full E5 acceptance"
+  },
+  "observations": [
+    {
+      "mode": "layer-only-cut28",
+      "cut": 28,
+      "requests": {
+        "2k": {
+          "role": "prefix",
+          "prompt_tokens": 1900,
+          "generated": 148,
+          "prefill_us": 2085108315,
+          "decode_us": 1292071463,
+          "cpu_ms": 2535918.87624,
+          "layer_ms": 3376966.028474,
+          "head_ms": 1.047019,
+          "engram_ms": 42828.145658,
+          "prefill_tokens_per_second": 0.9112236454728252,
+          "decode_tokens_per_second": 0.11454474790145566
+        }
+      },
+      "layer_identity": {
+        "role": "prefix",
+        "model_identity": "SHA256-GGUF-CONCAT",
+        "pack_identity": "SHA256-PACK-BYTES",
+        "effective_experts": "6",
+        "arithmetic": "2",
+        "cut": "28",
+        "model_sha256": "a1fa850b77bdf33420ebeafd5cf67607b0077e9f3a958ab15666fe2d970a7d5f",
+        "pack_sha256": "9e3919c45430c4a03c17a827b5036da173405db8c5c3386f5b77d5409b2875d5",
+        "plan_sha256": "6ed3014df801c99d0950ed64fb7b2d0f4cb5ee2aacaef859c5d8d3d511cf2610",
+        "binary_sha256": "075361f7547b2299f8b021290e94f319f6fcc150827ba0368f2859b3f94318e4"
+      },
+      "scope": "Complete published Q3 model. Actual 1900 prompt + 148 generated tokens. Layer-only and hybrid use the same geometry, native expert budgets and backing. One request each, inherited caches; no controlled speedup claim. Numerical and task quality remain separate.",
+      "resources": {
+        "lucy": {
+          "device_vram_peak_bytes": 8712617984,
+          "telemetry_gaps": 0,
+          "target_budget_exceeded_samples": 0,
+          "model_process_pss_peak_sum_upper_bound_bytes": 33837199360
+        },
+        "astor": {
+          "device_vram_peak_bytes": 7507140608,
+          "telemetry_gaps": 0,
+          "target_budget_exceeded_samples": 0,
+          "model_process_pss_peak_sum_upper_bound_bytes": 45039600640
+        }
+      }
+    },
+    {
+      "mode": "hybrid-cut28",
+      "cut": 28,
+      "requests": {
+        "2k": {
+          "role": "prefix",
+          "prompt_tokens": 1900,
+          "generated": 148,
+          "prefill_us": 1174440969,
+          "decode_us": 289022408,
+          "cpu_ms": 971782.194022,
+          "layer_ms": 1463328.839339,
+          "head_ms": 1.075401,
+          "engram_ms": 3041.01391,
+          "prefill_tokens_per_second": 1.6177909747288457,
+          "decode_tokens_per_second": 0.5120710225346956
+        }
+      },
+      "layer_identity": {
+        "role": "prefix",
+        "model_identity": "SHA256-GGUF-CONCAT",
+        "pack_identity": "SHA256-PACK-BYTES",
+        "effective_experts": "6",
+        "arithmetic": "2",
+        "cut": "28",
+        "model_sha256": "a1fa850b77bdf33420ebeafd5cf67607b0077e9f3a958ab15666fe2d970a7d5f",
+        "pack_sha256": "9e3919c45430c4a03c17a827b5036da173405db8c5c3386f5b77d5409b2875d5",
+        "plan_sha256": "a09e4e3eff1a2f8ead979930dd0c126a5784fcef73a56253195933c06e1075c6",
+        "binary_sha256": "075361f7547b2299f8b021290e94f319f6fcc150827ba0368f2859b3f94318e4"
+      },
+      "scope": "Complete published Q3 model. Actual 1900 prompt + 148 generated tokens. Layer-only and hybrid use the same geometry, native expert budgets and backing. One request each, inherited caches; no controlled speedup claim. Numerical and task quality remain separate.",
+      "resources": {
+        "astor": {
+          "device_vram_peak_bytes": 6942351360,
+          "telemetry_gaps": 0,
+          "target_budget_exceeded_samples": 0,
+          "model_process_pss_peak_sum_upper_bound_bytes": 47944662016
+        },
+        "lucy": {
+          "device_vram_peak_bytes": 8329887744,
+          "telemetry_gaps": 0,
+          "target_budget_exceeded_samples": 0,
+          "model_process_pss_peak_sum_upper_bound_bytes": 34273667072
+        }
+      }
+    }
+  ]
+}

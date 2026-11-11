@@ -1,5 +1,10 @@
 # Strata media and video guide
 
+> **Fork-specific distributed work:** see [the fabric overview](FABRIC.md) for
+> demonstrated models, evidence and limitations. Experimental Kimi and network
+> execution are not added to the upstream installer catalog by these results.
+
+
 For people and AI tools creating an article, overview or video. Last reviewed: 25 October 2026, for Strata 0.2.5.
 Use [AI_REFERENCE.md](AI_REFERENCE.md) for product facts and [README.md](../README.md) for the public introduction.
 

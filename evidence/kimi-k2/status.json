@@ -20,6 +20,7 @@
     "P": "NOT RUN"
   },
   "full_model_download_authorized_by_gates": true,
-  "next": "K7: bounded full-K2 pool timeout build, replay captured layer59 MoE, then retry unchanged256-token prefill and16 autoregressive positions",
-  "raw_capture_root": "/mnt/work/kimi-k2"
+  "next": "Original K7-K10 qualification is deferred; short full-model vertical inference is complete. See docs/KIMI_K2.md.",
+  "raw_capture_root": "/mnt/work/kimi-k2",
+  "vertical_milestone": "PASS: see vertical-inference.json for the separate short full-model run"
 }

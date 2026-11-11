@@ -1,0 +1,110 @@
+{
+  "status": "corpus_complete_for_experimental_review",
+  "strict_E5_pass_claimed": false,
+  "decision": "experimental-decision-20261110.txt",
+  "measurements": {
+    "layer-only": {
+      "positions": 1000,
+      "matching_top1_positions": 989,
+      "top1_agreement": 0.989,
+      "mean_kl": 0.0015021134253708616,
+      "original_numerical_predicate": false,
+      "baseline_passes": [
+        "last-assignment",
+        "multiply",
+        "prime",
+        "word-sort"
+      ],
+      "lost_baseline_passes": [],
+      "cases": [
+        {
+          "id": "catalog-migration",
+          "positions": 200,
+          "top1_agreement": 0.985,
+          "mean_kl": 0.003985661783140009,
+          "ordered_logits_sha256": "42c83d6eea3992de6e7dd57898a6b6dbe6ac2eca81dede22bb867f4597a274e1"
+        },
+        {
+          "id": "garden-records",
+          "positions": 200,
+          "top1_agreement": 1.0,
+          "mean_kl": 0.0009124510389859019,
+          "ordered_logits_sha256": "b79a3107f1d2ee1079ad5df7cc8e6cb54846eb4c976bc95ac01a3d99cd57eb20"
+        },
+        {
+          "id": "warehouse-audit",
+          "positions": 200,
+          "top1_agreement": 0.99,
+          "mean_kl": 0.0012256911898443595,
+          "ordered_logits_sha256": "d4bd396328e86b2df2eb0e8d5c4ca0227bd31f45b988ff18df908f8996b846b2"
+        },
+        {
+          "id": "observatory-review",
+          "positions": 200,
+          "top1_agreement": 0.985,
+          "mean_kl": 0.0006526082588407773,
+          "ordered_logits_sha256": "59d33853b3ded7bb3afa6e3e0b97f9a823c87bbe90de9ce6bb79a17206eeec91"
+        },
+        {
+          "id": "archive-ledger",
+          "positions": 200,
+          "top1_agreement": 0.985,
+          "mean_kl": 0.0007341548560432613,
+          "ordered_logits_sha256": "91de89027c8613d1b8b35a06d843f24bb0e2e8c3477c9f717739b135bb185bc2"
+        }
+      ]
+    },
+    "hybrid": {
+      "positions": 1000,
+      "matching_top1_positions": 989,
+      "top1_agreement": 0.989,
+      "mean_kl": 0.0015021134253708616,
+      "original_numerical_predicate": false,
+      "baseline_passes": [
+        "last-assignment",
+        "multiply",
+        "prime",
+        "word-sort"
+      ],
+      "lost_baseline_passes": [],
+      "cases": [
+        {
+          "id": "catalog-migration",
+          "positions": 200,
+          "top1_agreement": 0.985,
+          "mean_kl": 0.003985661783140009,
+          "ordered_logits_sha256": "42c83d6eea3992de6e7dd57898a6b6dbe6ac2eca81dede22bb867f4597a274e1"
+        },
+        {
+          "id": "garden-records",
+          "positions": 200,
+          "top1_agreement": 1.0,
+          "mean_kl": 0.0009124510389859019,
+          "ordered_logits_sha256": "b79a3107f1d2ee1079ad5df7cc8e6cb54846eb4c976bc95ac01a3d99cd57eb20"
+        },
+        {
+          "id": "warehouse-audit",
+          "positions": 200,
+          "top1_agreement": 0.99,
+          "mean_kl": 0.0012256911898443595,
+          "ordered_logits_sha256": "d4bd396328e86b2df2eb0e8d5c4ca0227bd31f45b988ff18df908f8996b846b2"
+        },
+        {
+          "id": "observatory-review",
+          "positions": 200,
+          "top1_agreement": 0.985,
+          "mean_kl": 0.0006526082588407773,
+          "ordered_logits_sha256": "59d33853b3ded7bb3afa6e3e0b97f9a823c87bbe90de9ce6bb79a17206eeec91"
+        },
+        {
+          "id": "archive-ledger",
+          "positions": 200,
+          "top1_agreement": 0.985,
+          "mean_kl": 0.0007341548560432613,
+          "ordered_logits_sha256": "91de89027c8613d1b8b35a06d843f24bb0e2e8c3477c9f717739b135bb185bc2"
+        }
+      ]
+    }
+  },
+  "scope": "Original frozen corpus and strict comparators unchanged. Review remaining behavior for comparability before experimental acceptance. Remote GPU expert execution is not qualified. Prior model verification trusted without rescanning."
+}

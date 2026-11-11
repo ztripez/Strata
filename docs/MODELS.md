@@ -1,5 +1,10 @@
 ﻿# Which model? Sizes, versions and what fits
 
+> **Fork-specific distributed work:** see [the fabric overview](FABRIC.md) for
+> demonstrated models, evidence and limitations. Experimental Kimi and network
+> execution are not added to the upstream installer catalog by these results.
+
+
 This page helps you choose a model and check that your computer can run it. It covers DeepSeek V4.1-Flash,
 Qwen3.8-Flash-Next (and its variants) and Qwen3.6-35B-A3B. For installing, see [INSTALL.md](INSTALL.md).
 

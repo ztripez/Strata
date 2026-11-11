@@ -1,0 +1,23 @@
+{
+  "status": "experimentally_accepted",
+  "strict_E5_pass": false,
+  "accepted_at": "2026-11-10",
+  "authorization": "User decision recorded in experimental-decision-20261110.txt",
+  "review": "Full frozen corpus confirms comparable behavior: per-prompt top1 98.5%, 100%, 99%, 98.5%, 98.5%; no materially worse remaining result; all baseline passes retained.",
+  "positions": 1000,
+  "matching_top1_positions": 989,
+  "disagreements": 11,
+  "top1_agreement": 0.989,
+  "mean_kl": 0.0015021134253708616,
+  "baseline_task_passes_retained": 4,
+  "baseline_task_passes_total": 4,
+  "total_tasks": 8,
+  "hybrid_vs_layer_only": "All five ordered raw-logit digests match; CPU-backed remote MoE adds no measured deviation.",
+  "remaining_limits": [
+    "Original strict E5 fails 99% top1; unchanged comparator results preserved.",
+    "Remote GPU expert quality is not qualified.",
+    "Normalization is the first observed difference; its observation does not establish the ultimate cause.",
+    "No numerical refinement unless new functional regression."
+  ],
+  "next": "E7 physical memory, VRAM, file residency/storage traffic, prefill/decode performance, solo/cut20/cut24 placement comparison."
+}

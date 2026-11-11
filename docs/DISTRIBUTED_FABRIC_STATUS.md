@@ -1,6 +1,10 @@
 # Distributed fabric checkpoint
 
-Current execution priority (11 November 2026): [complete published Q3 capacity](DEEPSEEK_Q3_CAPACITY.md).
+For the public summary across DeepSeek, Qwen and Kimi, start with
+[the fabric overview](FABRIC.md). The dated E0–E8 tables below retain the original
+DeepSeek qualification criteria; they are not the current vertical-completion rule.
+
+DeepSeek checkpoint (11 November 2026): [completed published Q3 capacity](DEEPSEEK_Q3_CAPACITY.md).
 The 2.00-bpw reference and accepted E5 checkpoint are frozen. Both Q3 and Q4
 are downloaded. At 10:25 CET, Q3 retry5 has completed both actual 2K requests at
 cut28, including bidirectional remote CPU experts with zero fallbacks and no
@@ -35,7 +39,7 @@ ctest --test-dir /var/tmp/strata-network-contract-tests -R '^deepseek_layer_rpc_
 ## Current gate status
 
 Verified 10 November 2026 at 23:46 CET, branch `feat/distributed-experts`.
-This table is the authoritative current summary of the
+This table records the original DeepSeek qualification assessment against the
 [E0–E8 acceptance gates](NETWORK_SHARDED_DEEPSEEK_PLAN.md#6-success-gates-and-dependency-order).
 Update it from completed receipts and live process state when a campaign advances.
 Historical statements below do not override it. A bounded pass is not full-model

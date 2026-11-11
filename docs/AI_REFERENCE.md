@@ -1,5 +1,10 @@
 # Strata reference for AI tools and automated readers
 
+> **Fork-specific distributed work:** see [the fabric overview](FABRIC.md) for
+> demonstrated models, evidence and limitations. Experimental Kimi and network
+> execution are not added to the upstream installer catalog by these results.
+
+
 Last reviewed: 25 October 2026 against the 0.2.5 release tree (app and Terminal 0.2.5; Control and engines 0.1.50).
 App, Control and engine versions differ; use the release notes and the installed component information. This page
 holds the technical context behind the short [README](../README.md). Use [AI_SETUP.md](AI_SETUP.md) to install Strata for a user,

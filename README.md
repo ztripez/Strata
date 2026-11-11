@@ -22,6 +22,18 @@
 
 <p align="center"><sub><b>English</b> · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ja.md">日本語</a> · <a href="README.de.md">Deutsch</a> · <a href="README.fr.md">Français</a> · <a href="README.es.md">Español</a> · <a href="README.pt-BR.md">Português</a> · <a href="README.pl.md">Polski</a></sub></p>
 
+## Experimental distributed inference in this fork
+
+This fork adds heterogeneous CUDA/HIP inference across multiple computers.
+DeepSeek V4.1 Flash completed distributed 2K inference, including its full Q3 set.
+Kimi K2 completed a short full-model autoregressive generation across an RTX 3080
+and RX 6800. These are source-checkout experiments, separate from the upstream
+installers described below.
+
+**[Fabric overview, demonstrated models and limitations](docs/FABRIC.md)** ·
+[Reddit draft](docs/REDDIT_FABRIC_DRAFT.md) · [Upstream Strata](https://github.com/Niko1221/Strata)
+
+
 **Free, open source, and yours to run.** Use Strata on your desktop or with your favorite coding tools. No account needed.
 
 ## Models
