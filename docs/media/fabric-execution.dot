@@ -1,0 +1,22 @@
+// Render: dot -Tpng -Gdpi=144 docs/media/fabric-execution.dot -o docs/media/fabric-execution.png
+digraph fabric {
+  graph [rankdir=TB, bgcolor="#f7f9fc", pad=0.3, nodesep=0.65, ranksep=0.65, fontname="DejaVu Sans", fontsize=18, label="One model, one autoregressive loop\nKimi K2 execution direction", labelloc=t];
+  node [shape=box, style="rounded,filled", fillcolor="white", color="#a4afbf", fontcolor="#142033", fontname="DejaVu Sans", fontsize=18, margin="0.2,0.16", penwidth=1.5];
+  edge [color="#334155", fontcolor="#334155", fontname="DejaVu Sans", fontsize=15, penwidth=2, arrowsize=0.8];
+  input [label="Input token"];
+  cuda [label="Lucy · RTX 3080 / CUDA\nAssigned prefix layers\nLocal attention state", fillcolor="#e5efff", color="#3065ba"];
+  hip [label="Astor · RX 6800 / HIP\nAssigned suffix layers\nLocal attention state", fillcolor="#dff4ed", color="#26806b"];
+  sample [label="Return logits to Lucy\nSelect the next token"];
+  ae [label="Astor expert worker\nConfigured local tiers", fillcolor="#dff4ed", color="#26806b"];
+  le [label="Lucy expert worker\nConfigured local tiers", fillcolor="#e5efff", color="#3065ba"];
+  {rank=same; cuda; ae;}
+  {rank=same; hip; le;}
+  input -> cuda;
+  cuda -> hip [label="Layer activations /\nboundary state"];
+  hip -> sample;
+  sample -> input [label="Next token", constraint=false, color="#3065ba"];
+  cuda -> ae [dir=both, style=dashed, color="#a36216", label="Expert request /\ncontribution"];
+  hip -> le [dir=both, style=dashed, color="#a36216", label="Expert request /\ncontribution"];
+  weights [shape=note, fillcolor="#eaeef4", label="Immutable file-backed weights · NFS / SSD\nSupply working sets on both hosts\nExpert execution uses the configured CPU / RAM / GPU tiers"];
+  sample -> weights [style=invis];
+}

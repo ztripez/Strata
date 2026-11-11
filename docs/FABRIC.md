@@ -42,28 +42,9 @@ prefix and HIP on Astor owns the suffix. The measured DeepSeek placements used
 the reverse layer-owner direction. Each diagram arrow describes data movement,
 not a transfer of GPU pointers or a copy of the complete model.
 
-```mermaid
-flowchart LR
-    subgraph Lucy[Lucy: RTX 3080 / CUDA]
-        token[Input token / next-token sampler]
-        prefix[CUDA-owned prefix layers]
-        lexpert[Expert worker: local memory tiers]
-        token --> prefix
-    end
-    subgraph Astor[Astor: RX 6800 / HIP]
-        suffix[HIP-owned suffix layers]
-        aexpert[Expert worker: local memory tiers]
-    end
-    prefix -->|Layer activations / boundary state| suffix
-    suffix -->|Logits returned for next-token selection| token
-    prefix <-->|Expert request / contribution| aexpert
-    suffix <-->|Expert request / contribution| lexpert
-    weights[(Immutable file-backed weights: NFS / SSD)]
-    weights -->|Working set| prefix
-    weights -->|Working set| suffix
-    weights -->|Working set| lexpert
-    weights -->|Working set| aexpert
-```
+![Kimi K2 execution loop: input token through CUDA prefix and HIP suffix, logits returned for next-token selection, bidirectional expert RPCs and file-backed weights.](media/fabric-execution.png)
+
+[Editable diagram source](media/fabric-execution.dot).
 
 The solid layer path and token feedback form one autoregressive inference loop.
 Expert calls are separate exchanges in either direction. A worker's local tiers
