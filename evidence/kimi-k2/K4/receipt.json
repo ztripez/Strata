@@ -1,0 +1,729 @@
+{
+  "gate": "K4",
+  "status": "PASS",
+  "model": "moonshotai/Kimi-K2-Instruct",
+  "revision": "fd1984e2b7a3350dbf7305fe73a4ede25c14de50",
+  "quant": "UD-IQ3_XXS",
+  "quant_revision": "23bf90d8196ddfcb3328a6f60c99a9bdb5c1dadf",
+  "model_manifest_sha256": "4cd738a1b49e9c4a6bc6770ac99783c9b3cac1b394d9040930ff77f2ace83e1a",
+  "strata_commit": "509b92fc8d00e5e0e91e2983eee21a2a19e42fbc",
+  "nodes": [
+    "lucy/CUDA/RTX3080",
+    "astor/HIP/gfx1030"
+  ],
+  "evidence_directory": "/mnt/work/kimi-k2/k4",
+  "executed": [
+    "Built and ran K2 layer0 with existing Strata F32 GEMV, finish RMSNorm/RoPE and SwiGLU kernels on Lucy CUDA/RTX3080",
+    "Built and ran identical adapter on Astor HIP/gfx1030, reading decoded fixture weights through shared NFS",
+    "Compared normalization, attention output, MLP output and final layer output to frozen K2 CPU reference",
+    "Original layer0 IQ4_XS/Q4_K blocks decoded on GPU via existing iq block decoders and F32 output on CUDA and HIP",
+    "F16 decoded packed run failed attention relative tolerance; retained cuda-packed-comparison.log",
+    "Extended existing dequant_rows_kernel2 with explicit F32 output; default 16-bit path arithmetic retained",
+    "Bound original Q8 key/value matrices through existing strata::kernels::dequant_q8_0 and a K2-only GPU layout conversion",
+    "Executed all-original-quantized layer0 on CUDA and HIP",
+    "Executed original IQ3_S/IQ4_XS expert0 on three saved real K2 fixture inputs using existing GPU decoders/GEMV/SwiGLU",
+    "Extended existing route_topk kernel with explicit K2 sigmoid+bias policy; legacy softmax policies unchanged",
+    "Real K2 gate projection and sigmoid top8 routing executed on CUDA and HIP",
+    "Pre-change vs updated router outputs byte-identical for 256/8 and 512/10, three tokens each, on CUDA and HIP",
+    "Reproduced native_fmt legacy rejection for K2: act8176/h2336 exceed fixed scratch",
+    "Added opt-in pool-sized format validation and larger scratch inside the existing ExpertPool",
+    "Mapped real expert0 gate/up/down read-only and executed all three inputs through the existing two-worker pool on Lucy and Astor",
+    "Measured native activation-quantized arithmetic against F32 reference, then added explicit DequantizedF32 arithmetic in the same pool using ggml to_float decoding",
+    "Both hosts passed frozen per-input F32 output tolerances; pooled vs serial row arithmetic exact",
+    "Legacy native_fmt rejection unchanged; prior native arithmetic output byte-identical before/after on both hosts",
+    "Fixed-plan ExpertCache admission for layer1 expert0 using original split gate/up/down blocks",
+    "Native GPU routing -> GPU-cache hit and mapped CPU ExpertPool misses -> native shared expert -> weighted reduction executed on CUDA and HIP",
+    "Matched exact expert sets and all saved boundaries against frozen K2 upstream MoE reference on all three inputs",
+    "Exposed model-specific run_layer/run_moe API in opt-in strata_kimi2 library",
+    "Isolated CMake build completed and CMake-built MoE reference comparison passed",
+    "Native layers0->1 executed actual token embeddings through full MLA, residual/RMSNorm, routed/shared MoE on both GPUs",
+    "Compared both hidden boundaries and exact expert sets with frozen upstream K2 reference"
+  ],
+  "measured": {
+    "CUDA": {
+      "input_norm": {
+        "max_abs": 2.9802322387695312e-08,
+        "relative_rms": 8.478234292397246e-08
+      },
+      "attention_output": {
+        "max_abs": 7.450580596923828e-08,
+        "relative_rms": 5.970622964923678e-07
+      },
+      "mlp_output": {
+        "max_abs": 2.60770320892334e-08,
+        "relative_rms": 6.506259637717449e-07
+      },
+      "output": {
+        "max_abs": 2.384185791015625e-07,
+        "relative_rms": 2.2016129364033077e-08
+      }
+    },
+    "HIP": {
+      "input_norm": {
+        "max_abs": 2.9802322387695312e-08,
+        "relative_rms": 8.478234292397246e-08
+      },
+      "attention_output": {
+        "max_abs": 7.450580596923828e-08,
+        "relative_rms": 5.928609425609466e-07
+      },
+      "mlp_output": {
+        "max_abs": 4.470348358154297e-08,
+        "relative_rms": 6.49487333248544e-07
+      },
+      "output": {
+        "max_abs": 2.384185791015625e-07,
+        "relative_rms": 2.215447025832873e-08
+      }
+    },
+    "packed_dense_CUDA": {
+      "input_norm": {
+        "max_abs": 2.9802322387695312e-08,
+        "relative_rms": 8.478234292397246e-08
+      },
+      "attention_output": {
+        "max_abs": 7.450580596923828e-08,
+        "relative_rms": 5.970622964923678e-07
+      },
+      "mlp_output": {
+        "max_abs": 2.60770320892334e-08,
+        "relative_rms": 6.506259637717449e-07
+      },
+      "output": {
+        "max_abs": 2.384185791015625e-07,
+        "relative_rms": 2.2016129364033077e-08
+      }
+    },
+    "packed_dense_HIP": {
+      "input_norm": {
+        "max_abs": 2.9802322387695312e-08,
+        "relative_rms": 8.478234292397246e-08
+      },
+      "attention_output": {
+        "max_abs": 7.450580596923828e-08,
+        "relative_rms": 5.928609425609466e-07
+      },
+      "mlp_output": {
+        "max_abs": 4.470348358154297e-08,
+        "relative_rms": 6.49487333248544e-07
+      },
+      "output": {
+        "max_abs": 2.384185791015625e-07,
+        "relative_rms": 2.215447025832873e-08
+      }
+    },
+    "all_packed_layer0": {
+      "cuda": {
+        "input_norm": {
+          "max_abs": 2.9802322387695312e-08,
+          "relative_rms": 8.478234292397246e-08
+        },
+        "attention_output": {
+          "max_abs": 7.450580596923828e-08,
+          "relative_rms": 5.970622964923678e-07
+        },
+        "mlp_output": {
+          "max_abs": 2.60770320892334e-08,
+          "relative_rms": 6.506259637717449e-07
+        },
+        "output": {
+          "max_abs": 2.384185791015625e-07,
+          "relative_rms": 2.2016129364033077e-08
+        }
+      },
+      "hip": {
+        "input_norm": {
+          "max_abs": 2.9802322387695312e-08,
+          "relative_rms": 8.478234292397246e-08
+        },
+        "attention_output": {
+          "max_abs": 7.450580596923828e-08,
+          "relative_rms": 5.928609425609466e-07
+        },
+        "mlp_output": {
+          "max_abs": 4.470348358154297e-08,
+          "relative_rms": 6.49487333248544e-07
+        },
+        "output": {
+          "max_abs": 2.384185791015625e-07,
+          "relative_rms": 2.215447025832873e-08
+        }
+      }
+    },
+    "native_expert0": {
+      "cuda": {
+        "max_abs": 4.291534423828125e-06,
+        "relative_rms": 6.205056592989422e-07
+      },
+      "hip": {
+        "max_abs": 4.5299530029296875e-06,
+        "relative_rms": 6.223832542673335e-07
+      }
+    },
+    "GPU_routing": {
+      "cuda": {
+        "expert_ids": [
+          [
+            0,
+            46,
+            22,
+            301,
+            216,
+            190,
+            103,
+            316
+          ],
+          [
+            248,
+            192,
+            199,
+            301,
+            166,
+            109,
+            216,
+            22
+          ],
+          [
+            361,
+            311,
+            209,
+            237,
+            87,
+            173,
+            29,
+            359
+          ]
+        ],
+        "expert_sets_exact": true,
+        "max_weight_abs": 5.960464477539063e-08,
+        "weight_relative_rms": 7.28687012951923e-08,
+        "max_logit_abs": 1.049041748046875e-05,
+        "weights": [
+          [
+            0.35086357593536377,
+            0.36032626032829285,
+            0.3518792688846588,
+            0.35236337780952454,
+            0.3522791862487793,
+            0.3525208830833435,
+            0.35363832116127014,
+            0.35312893986701965
+          ],
+          [
+            0.43632736802101135,
+            0.36577561497688293,
+            0.3752760887145996,
+            0.3175748288631439,
+            0.35334640741348267,
+            0.3681025505065918,
+            0.3073728084564209,
+            0.30322426557540894
+          ],
+          [
+            0.3592696487903595,
+            0.3568207025527954,
+            0.3482261598110199,
+            0.35591697692871094,
+            0.35723352432250977,
+            0.35187193751335144,
+            0.3440946638584137,
+            0.3535662889480591
+          ]
+        ]
+      },
+      "hip": {
+        "expert_ids": [
+          [
+            0,
+            46,
+            22,
+            301,
+            216,
+            190,
+            103,
+            316
+          ],
+          [
+            248,
+            192,
+            199,
+            301,
+            166,
+            109,
+            216,
+            22
+          ],
+          [
+            361,
+            311,
+            209,
+            237,
+            87,
+            173,
+            29,
+            359
+          ]
+        ],
+        "expert_sets_exact": true,
+        "max_weight_abs": 5.960464477539063e-08,
+        "weight_relative_rms": 7.28687012951923e-08,
+        "max_logit_abs": 1.049041748046875e-05,
+        "weights": [
+          [
+            0.35086357593536377,
+            0.36032626032829285,
+            0.3518792688846588,
+            0.35236337780952454,
+            0.3522791862487793,
+            0.3525208830833435,
+            0.35363832116127014,
+            0.35312893986701965
+          ],
+          [
+            0.43632736802101135,
+            0.36577561497688293,
+            0.3752760887145996,
+            0.3175748288631439,
+            0.35334640741348267,
+            0.3681025505065918,
+            0.3073728084564209,
+            0.30322426557540894
+          ],
+          [
+            0.3592696487903595,
+            0.3568207025527954,
+            0.3482261598110199,
+            0.35591697692871094,
+            0.35723352432250977,
+            0.35187193751335144,
+            0.3440946638584137,
+            0.3535662889480591
+          ]
+        ]
+      }
+    },
+    "legacy_router_output_bytes_identical": {
+      "CUDA": true,
+      "HIP": true,
+      "cases": [
+        "256 experts top8, 3 tokens",
+        "512 experts top10, 3 tokens"
+      ],
+      "baseline": "git HEAD 509b92fc8d00e5e0e91e2983eee21a2a19e42fbc native_router.cu"
+    },
+    "CPU_pool_native_quantized_vs_F32": {
+      "max_abs": 0.06989192962646484,
+      "relative_rms": 0.017912764102220535,
+      "reference": "Float32 decoded GGUF expert; native pool quantizes activations via ggml vec_dot_type; arithmetic domains differ",
+      "pool_vs_serial_native": "exact"
+    },
+    "CPU_pool_DequantizedF32": {
+      "lucy": {
+        "max_abs": 2.384185791015625e-06,
+        "relative_rms": 5.223899393058673e-07,
+        "per_input": [
+          {
+            "max_abs": 1.0186340659856796e-10,
+            "relative_rms": 4.891881530966202e-07
+          },
+          {
+            "max_abs": 9.313225746154785e-09,
+            "relative_rms": 5.131324201101961e-07
+          },
+          {
+            "max_abs": 2.384185791015625e-06,
+            "relative_rms": 5.223905077400559e-07
+          }
+        ],
+        "native_serial_parity": "exact",
+        "arithmetic": "DequantizedF32, original F32 inputs, F64 accumulation"
+      },
+      "astor": {
+        "max_abs": 2.384185791015625e-06,
+        "relative_rms": 5.223899393058673e-07,
+        "per_input": [
+          {
+            "max_abs": 1.0186340659856796e-10,
+            "relative_rms": 4.891881530966202e-07
+          },
+          {
+            "max_abs": 9.313225746154785e-09,
+            "relative_rms": 5.131324201101961e-07
+          },
+          {
+            "max_abs": 2.384185791015625e-06,
+            "relative_rms": 5.223905077400559e-07
+          }
+        ],
+        "native_serial_parity": "exact",
+        "arithmetic": "DequantizedF32, original F32 inputs, F64 accumulation"
+      }
+    },
+    "native_pool_output_unchanged": {
+      "lucy": true,
+      "astor": true,
+      "tested_mode": "WindowInvariant, three real expert0 inputs; Default output not separately compared"
+    },
+    "combined_tiered_MoE": {
+      "cuda": {
+        "expert_ids": [
+          [
+            0,
+            46,
+            22,
+            301,
+            216,
+            190,
+            103,
+            316
+          ],
+          [
+            248,
+            192,
+            199,
+            301,
+            166,
+            109,
+            216,
+            22
+          ],
+          [
+            361,
+            311,
+            209,
+            237,
+            87,
+            173,
+            29,
+            359
+          ]
+        ],
+        "expert_sets_exact": true,
+        "boundaries": {
+          "weights": {
+            "max_abs": 5.960464477539063e-08,
+            "relative_rms": 7.28687012951923e-08
+          },
+          "parts": {
+            "max_abs": 2.0265579223632812e-06,
+            "relative_rms": 1.1214865480724256e-06
+          },
+          "reduced": {
+            "max_abs": 1.7285346984863281e-06,
+            "relative_rms": 1.1041402103728615e-06
+          },
+          "shared": {
+            "max_abs": 1.7210841178894043e-06,
+            "relative_rms": 1.0174633189308224e-06
+          },
+          "output": {
+            "max_abs": 2.0265579223632812e-06,
+            "relative_rms": 1.0332655620004516e-06
+          },
+          "output_input_0": {
+            "max_abs": 1.8917489796876907e-10,
+            "relative_rms": 9.309123925049789e-07
+          },
+          "output_input_1": {
+            "max_abs": 1.83936208486557e-08,
+            "relative_rms": 9.346773026663868e-07
+          },
+          "output_input_2": {
+            "max_abs": 2.0265579223632812e-06,
+            "relative_rms": 1.0332736337659298e-06
+          }
+        }
+      },
+      "hip": {
+        "expert_ids": [
+          [
+            0,
+            46,
+            22,
+            301,
+            216,
+            190,
+            103,
+            316
+          ],
+          [
+            248,
+            192,
+            199,
+            301,
+            166,
+            109,
+            216,
+            22
+          ],
+          [
+            361,
+            311,
+            209,
+            237,
+            87,
+            173,
+            29,
+            359
+          ]
+        ],
+        "expert_sets_exact": true,
+        "boundaries": {
+          "weights": {
+            "max_abs": 5.960464477539063e-08,
+            "relative_rms": 7.28687012951923e-08
+          },
+          "parts": {
+            "max_abs": 2.0265579223632812e-06,
+            "relative_rms": 1.1214865480724256e-06
+          },
+          "reduced": {
+            "max_abs": 1.7285346984863281e-06,
+            "relative_rms": 1.1041402103728615e-06
+          },
+          "shared": {
+            "max_abs": 1.7061829566955566e-06,
+            "relative_rms": 1.0158738632526365e-06
+          },
+          "output": {
+            "max_abs": 1.9669532775878906e-06,
+            "relative_rms": 1.0328999451303389e-06
+          },
+          "output_input_0": {
+            "max_abs": 1.8189894035458565e-10,
+            "relative_rms": 9.31137776660762e-07
+          },
+          "output_input_1": {
+            "max_abs": 1.816079020500183e-08,
+            "relative_rms": 9.350026743959461e-07
+          },
+          "output_input_2": {
+            "max_abs": 1.9669532775878906e-06,
+            "relative_rms": 1.0329080168958171e-06
+          }
+        }
+      }
+    },
+    "native_real_token_chain": {
+      "cuda": {
+        "token_ids": [
+          163594,
+          14062,
+          163601
+        ],
+        "expert_sets_exact": true,
+        "expert_ids": [
+          [
+            116,
+            88,
+            72,
+            165,
+            5,
+            0,
+            327,
+            356
+          ],
+          [
+            376,
+            121,
+            116,
+            137,
+            94,
+            208,
+            88,
+            372
+          ],
+          [
+            116,
+            88,
+            234,
+            133,
+            137,
+            157,
+            12,
+            349
+          ]
+        ],
+        "boundaries": {
+          "layer0": {
+            "max_abs": 6.332993507385254e-08,
+            "relative_rms": 4.813223881683371e-07
+          },
+          "layer1": {
+            "max_abs": 1.4901161193847656e-07,
+            "relative_rms": 5.042104476160603e-07
+          }
+        }
+      },
+      "hip": {
+        "token_ids": [
+          163594,
+          14062,
+          163601
+        ],
+        "expert_sets_exact": true,
+        "expert_ids": [
+          [
+            116,
+            88,
+            72,
+            165,
+            5,
+            0,
+            327,
+            356
+          ],
+          [
+            376,
+            121,
+            116,
+            137,
+            94,
+            208,
+            88,
+            372
+          ],
+          [
+            116,
+            88,
+            234,
+            133,
+            137,
+            157,
+            12,
+            349
+          ]
+        ],
+        "boundaries": {
+          "layer0": {
+            "max_abs": 1.1920928955078125e-07,
+            "relative_rms": 4.895781557934242e-07
+          },
+          "layer1": {
+            "max_abs": 1.1920928955078125e-07,
+            "relative_rms": 5.100864655105397e-07
+          }
+        }
+      }
+    }
+  },
+  "criteria": "Real-weight native layers0/1 execute on CUDA and HIP; biased top8 sets agree with CPU; existing GPU cache and mapped CPU pool execute genuine experts; decoded-F32 boundaries meet 1e-3 absolute and 1e-4 relative bounds",
+  "remaining": [
+    "K5: native contiguous 4\u20138 layer block with prefill and incremental compressed MLA state",
+    "K6-K10: distributed/full-model/quality/capacity/endpoint gates NOT RUN"
+  ],
+  "blockers": [],
+  "execution_state": "COMPLETED",
+  "tokenizer_capture": "/mnt/work/kimi-k2/k3/tokenizer.json",
+  "build_commands": {
+    "CUDA": "/opt/cuda/bin/nvcc -std=c++20 -O2 -arch=sm_86 -Iinclude -Isrc/dsv41 src/kimi2/layer0.cu src/dsv41/ds4_kernels.cu -o /mnt/work/kimi-k2/k4/strata-kimi2-layer-cuda",
+    "HIP": "/opt/rocm/bin/hipcc -std=c++20 -O2 --offload-arch=gfx1030 -I/opt/rocm/include -L/opt/rocm/lib -DSTRATA_USE_HIP=1 -Iinclude/strata/hip_compat -Iinclude -Isrc/dsv41 src/kimi2/layer0.cu src/dsv41/ds4_kernels.cu -o /var/tmp/strata-kimi2-layer-hip"
+  },
+  "adapter_sha256": "5d3dd1ce6f955ff02abf5c01a43dca02a684957777d148d4d82ac464de4ae03f",
+  "experiments": [
+    {
+      "name": "packed dense via F16 scratch",
+      "status": "FAIL",
+      "boundary": "attention_output",
+      "max_abs": 2.6073306798934937e-05,
+      "relative_rms": 0.00027564133051782846,
+      "log": "/mnt/work/kimi-k2/k4/cuda-packed-comparison.log"
+    },
+    {
+      "name": "packed dense via F32 scratch",
+      "status": "PASS",
+      "scope": "Layer0 IQ4_XS/Q4_K GPU decode plus dense arithmetic on CUDA/HIP; Q8 key/value projection remains decoded fixture"
+    }
+  ],
+  "packed_commands": {
+    "CUDA": "/mnt/work/kimi-k2/k4/strata-kimi2-packed-f32-cuda /mnt/work/kimi-k2/k4/fixture /mnt/work/kimi-k2/k4/cuda-packed-f32 --packed-dense",
+    "HIP": "LD_LIBRARY_PATH=/opt/rocm/lib /var/tmp/strata-kimi2-packed-f32-hip /mnt/storage/models/strata-kimi-k2-reference/k4-layer0 /mnt/storage/models/strata-kimi-k2-reference/k4-layer0/hip-packed-f32 --packed-dense"
+  },
+  "source_sha256": {
+    "CMakeLists.txt": "0c0c56976222f43a62e56306d86b8c5c381689e4a2166a80cc8218956ae3bcf3",
+    "include/strata/kernels/cpu/native_expert.hpp": "4f60006114852dc6e588e860e7fdb59f7f5b094a6d7952b9f2be44eae802cfe4",
+    "include/strata/kernels/cpu/pool.hpp": "1de23a3b46bf67853d64807ead46e6e0880f9898615e97955cfc061d50e5ec32",
+    "include/strata/kernels/native_router.hpp": "26e4c9f712ff1dc57a34fe50402b4d6770d4265852c046be783de1832b741909",
+    "src/dsv41/ds4_iq.cu": "e9c2fa8b212874b2ee1ee76844fce614395f777f9cee0fdbf9a43521380c2456",
+    "src/dsv41/ds4_iq.cuh": "0a88cb8ac43e3a20d4048c0c1428d58a92a968d65933fead3072f3ef6c73bcc0",
+    "src/kernels/cpu/native_expert.cpp": "47b2e68c5fb61746aafcb4b93e89861dfc315ce0ace3ff752da08745c44ebf0a",
+    "src/kernels/cpu/pool.cpp": "62da42b69088f98e6e20e5ed106a0e38a0e3989baae09305afe43d5a4db59595",
+    "src/kernels/cuda/native_router.cu": "88f159b8f2acb62efd5f3d8e6514555191ef689dee0cba0c5b95771905a7d85d",
+    "src/kimi2/router.cu": "aebffd852baa70909c720adf2364cb0da97918105a56e371eb03d497c731df94",
+    "src/kimi2/moe.cu": "9123908070961230b94793e7b9d5f688ff9629470f9a84df173dab3b3f6db39e",
+    "src/kimi2/chain.cpp": "0f5456a2304f5307bb6751b532b7ea1d3720a15becbf5ad580355508675b1959",
+    "src/kimi2/layer0.cu": "6569ee12ba6147015ed0b5a34b9fceeeebfbb183b346e634129c5bfd87f348db",
+    "src/kimi2/cpu_expert.cpp": "19d361583ef53c5a7560dc9cd7797b7447560ac17e150a6cf7f9824f0fcca25c",
+    "include/strata/kimi2/engine.hpp": "b3ec7c7185290778a451fc766a6a7206fb642f16620fe96f072442ee1e0fc802"
+  },
+  "native_commands": {
+    "CUDA_layer0": "strata-kimi2-native-cuda FIXTURE PREFIX --packed-dense",
+    "CUDA_expert0": "strata-kimi2-native-cuda EXPERT0_FIXTURE PREFIX --expert",
+    "HIP_layer0": "LD_LIBRARY_PATH=/opt/rocm/lib strata-kimi2-native-hip FIXTURE PREFIX --packed-dense",
+    "HIP_expert0": "LD_LIBRARY_PATH=/opt/rocm/lib strata-kimi2-native-hip EXPERT0_FIXTURE PREFIX --expert"
+  },
+  "limits": [
+    "Profile tested: layers0/1, first three real token embeddings, fresh MLA state; no native incremental cache proof yet",
+    "CPU misses explicitly use DequantizedF32: ggml weight decode, original F32 activations, F64 accumulation, F32 output",
+    "Each host executed separately; no distributed K2 pass, full-model generation or capacity qualification",
+    "Original packed checkpoint slices; no full pack download"
+  ],
+  "source_findings": [
+    {
+      "path": "src/kernels/cpu/native_expert.cpp:219",
+      "finding": "native_fmt checks act_bytes<=kNativeActBytes and h_bytes<=kNativeHBytes; K2 geometry needs larger buffers",
+      "status": "Static source analysis; no K2 pool runtime call yet"
+    }
+  ],
+  "CPU_profile": {
+    "arithmetic": "NativeArithmetic::DequantizedF32",
+    "format": "original IQ3_S/IQ4_XS mapped blocks",
+    "activation": "original F32, no activation quantization",
+    "accumulation": "F64 reference accumulation, F32 output",
+    "selection": "explicit opt-in; old Default and WindowInvariant remain"
+  },
+  "tiered_plan": {
+    "cached_layer": 1,
+    "cached_experts": [
+      0
+    ],
+    "cache_slots": 1,
+    "cache_bytes": 20414464,
+    "CPU_arithmetic": "DequantizedF32",
+    "GPU_assignments_each_host": 1,
+    "CPU_mapped_assignments_each_host": 23,
+    "inputs": 3,
+    "routed_experts_per_input": 8
+  },
+  "build_failures": [
+    {
+      "scope": "HIP combined MoE first build",
+      "reason": "hipcc treated CPU .o files as source under persistent -x hip",
+      "fix": "explicit -x none before CPU objects",
+      "log": "/var/tmp/strata-kimi2-moe-hip-build.log",
+      "retry": "/var/tmp/strata-kimi2-moe-hip-build-retry.log",
+      "retry_status": "PASS"
+    }
+  ],
+  "isolated_build": {
+    "state": "COMPLETED",
+    "session_id": 63599,
+    "directory": "/mnt/work/kimi-k2/build-cuda",
+    "log": "/mnt/work/kimi-k2/k4/cmake/cuda-moe-build.log",
+    "target": "strata-kimi2-chain",
+    "last_observed_progress": "100%"
+  },
+  "capture_collection": {
+    "HIP": "Astor completed and wrote captures. Lucy initially could not observe the new layer1 file over NFS. Collected completed captures directly with scp; no model restart.",
+    "layer1_remote_and_local_sha256": "1defbe99db9209d0f04253893de96ba22afe0934b6707d2fee53a6b319d08d6a",
+    "initial_comparison_logs": [
+      "native-chain/hip-comparison.log",
+      "native-chain/hip-comparison-retry.log"
+    ],
+    "passing_comparison_log": "native-chain/hip-comparison-collected.log"
+  },
+  "captured_cuda_chain": {
+    "path": "/mnt/work/kimi-k2/k4/cmake/strata-kimi2-chain-cuda-captured",
+    "sha256": "e07cf7d5efa1efc006bf8d5ca6b98a2ebb1da43b0e39600f49f5298669457784"
+  }
+}

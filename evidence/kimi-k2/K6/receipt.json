@@ -1,0 +1,203 @@
+{
+  "gate": "K6",
+  "status": "PASS",
+  "partial_execution": {
+    "direction": "Astor -> Lucy CUDA worker",
+    "scope": "one original K2 layer1 expert0 assignment with actual K2 router weight; isolated MoE fixture, not distributed layer chain",
+    "max_abs": 7.548806024715304e-11,
+    "relative_rms": 1.0847962812476908e-06
+  },
+  "remote_assignments": {
+    "lucy_to_astor": 1,
+    "astor_to_lucy": 2
+  },
+  "remote_fallbacks": 0,
+  "worker_source": "src/program/expert_worker.cu opt-in STRATA_KIMI2_LIBRARY path",
+  "reuse": [
+    "NetworkExpertExecutor",
+    "expert-v1 HELLO/CAPS/INSTALL_PLAN/READY/EXECUTE/RESULT",
+    "existing worker slot arena and weighted reduction"
+  ],
+  "fixture_manifest": "/mnt/work/kimi-k2/k6/fixture-manifest.json",
+  "fixture_manifest_sha256": "a96a967d0598d86b6de9222170d2735ecb6d6edb680b8c924b5dea296c4d69f9",
+  "full_checkpoint_loaded": false,
+  "evidence_directory": "/mnt/work/kimi-k2/k6",
+  "remaining": [
+    "K7 full pinned checkpoint loads and produces final logits",
+    "K8 actual2K text inference",
+    "K9 quality acceptance",
+    "K10 capacity and endpoint"
+  ],
+  "observed_failures": [
+    {
+      "log": "/mnt/work/kimi-k2/k6/lucy-worker.log",
+      "cause": "legacy grouped kernel capability predicate rejects K2 IQ3_S down",
+      "fix": "K2 uses verified existing CPU format descriptor and F32 GPU decoder"
+    }
+  ],
+  "partial_reverse_execution": {
+    "direction": "Lucy -> Astor HIP worker",
+    "scope": "one real K2 layer1 expert0 assignment with original router weight",
+    "max_abs": 7.548806024715304e-11,
+    "relative_rms": 1.0833123269549105e-06
+  },
+  "native_chain_remote_experts": {
+    "comparison": {
+      "boundaries": {
+        "layer0": {
+          "max_abs": 1.1920928955078125e-07,
+          "relative_rms": 4.913912903248274e-07
+        },
+        "layer1": {
+          "max_abs": 1.7881393432617188e-07,
+          "relative_rms": 5.230690476309974e-07
+        },
+        "layer2": {
+          "max_abs": 1.7881393432617188e-07,
+          "relative_rms": 5.597397034762253e-07
+        },
+        "layer3": {
+          "max_abs": 7.152557373046875e-07,
+          "relative_rms": 5.996599838908878e-07
+        }
+      },
+      "expert_sets_exact": true,
+      "mode": "incremental",
+      "positions": 4,
+      "layers": 4
+    },
+    "remote_assignments": 3,
+    "remote_fallbacks": 0,
+    "scope": "all four layers owned on Lucy, selected expert operations on Astor; not whole-layer split"
+  },
+  "existing_layer_fabric_import": "/mnt/work/kimi-k2/k6/layer-fabric-import.json",
+  "scope": "four real K2 layers and four actual tokenizer embedding rows; split at layer2, windows [2,1,1]",
+  "model": "moonshotai/Kimi-K2-Instruct",
+  "revision": "fd1984e2b7a3350dbf7305fe73a4ede25c14de50",
+  "quant": "UD-IQ3_XXS",
+  "quant_revision": "23bf90d8196ddfcb3328a6f60c99a9bdb5c1dadf",
+  "strata_commit": "509b92fc8d00e5e0e91e2983eee21a2a19e42fbc",
+  "placement_manifest": "/mnt/work/kimi-k2/k6/split-plan.json",
+  "placement_manifest_sha256": "38a59dbd77c2206b04ffa5b95050b71986b8dd81ae6f0bed9a11ced77ce9b9eb",
+  "plan_epoch": 1,
+  "actual_max_position": 4,
+  "measurements": {
+    "status": "PASS",
+    "scope": "K6 real partial model: four layers, four actual token embeddings, windows [2,1,1]",
+    "plan": {
+      "arithmetic": "decoded F32 GPU / DequantizedF32 existing CPU pool",
+      "cut": 2,
+      "epoch": 1,
+      "fixture_identity": "a96a967d0598d86b6de9222170d2735ecb6d6edb680b8c924b5dea296c4d69f9",
+      "layer_owners": {
+        "astor": [
+          2,
+          3
+        ],
+        "lucy": [
+          0,
+          1
+        ]
+      },
+      "max_abs": 0.001,
+      "relative_rms": 0.0001,
+      "remote_experts": {
+        "astor_to_lucy": [
+          [
+            2,
+            2
+          ],
+          [
+            3,
+            2
+          ]
+        ],
+        "lucy_to_astor": [
+          [
+            1,
+            0
+          ]
+        ]
+      },
+      "scope": "K6 real layers0-3 only",
+      "windows": [
+        2,
+        1,
+        1
+      ]
+    },
+    "expert_sets_exact": true,
+    "returned_suffix_bytes_equal": true,
+    "boundaries": {
+      "layer0": {
+        "owner": "lucy/CUDA",
+        "max_abs": 1.1920928955078125e-07,
+        "relative_rms": 4.913912903248274e-07
+      },
+      "layer1": {
+        "owner": "lucy/CUDA",
+        "max_abs": 1.7881393432617188e-07,
+        "relative_rms": 5.230690476309974e-07
+      },
+      "layer2": {
+        "owner": "astor/HIP",
+        "max_abs": 1.7881393432617188e-07,
+        "relative_rms": 5.701303962268867e-07
+      },
+      "layer3": {
+        "owner": "astor/HIP",
+        "max_abs": 1.0728836059570312e-06,
+        "relative_rms": 6.23091182205826e-07
+      }
+    }
+  },
+  "bounded_failure": {
+    "type": "explicit termination of owned expert worker after READY",
+    "elapsed_ms": 0,
+    "client_exit": 0,
+    "expected_failure": true,
+    "executor_healthy": false,
+    "failure_stat": 1,
+    "healthy_run_fallbacks": 0,
+    "terminal_capture": "/mnt/work/kimi-k2/k6/disconnect-terminal-capture.txt"
+  },
+  "process_exits": {
+    "lucy_coordinator": 0,
+    "astor_suffix": 0,
+    "lucy_expert_worker": 0,
+    "astor_expert_worker": 0
+  },
+  "blockers": [],
+  "source_sha256": {
+    "CMakeLists.txt": "274eb018e7705663ec863dbf4483bfcf934abf11e6aa30f649ac34a4990f0fcd",
+    "include/strata/core/deepseek_layer_boundary.hpp": "29c6a2480585b6ffe2637b98b8f9d294aba8da708b998d7b7645691a74cc5284",
+    "include/strata/core/deepseek_layer_rpc.hpp": "c7f4bb7779765a34ec6b846c19b823980a391d70cebe5342811615e39b2e5f26",
+    "include/strata/core/deepseek_layer_session.hpp": "7e4d9b2f9eb24f243cb6625881ac958141ef95163dcf26fd41f0326eee2674b6",
+    "include/strata/core/network_io.hpp": "1b6cf779d58af746213e55c382b53979f5516c517d3fb6a6934c3bc1647eed8f",
+    "include/strata/kernels/cpu/native_expert.hpp": "4f60006114852dc6e588e860e7fdb59f7f5b094a6d7952b9f2be44eae802cfe4",
+    "include/strata/kernels/cpu/pool.hpp": "1de23a3b46bf67853d64807ead46e6e0880f9898615e97955cfc061d50e5ec32",
+    "include/strata/kernels/native_router.hpp": "26e4c9f712ff1dc57a34fe50402b4d6770d4265852c046be783de1832b741909",
+    "include/strata/kimi2/engine.hpp": "62faee38662ec143fa607159bcb08d3fd85e30bf5f814f9e451daf740fefa957",
+    "src/core/deepseek_layer_rpc.cpp": "04d0782fb4a8a53ad44d4f92b620ade8ebbcf546089e54bc63d02870a64a7f23",
+    "src/core/deepseek_layer_session.cpp": "389e08dacd29fc79c285d7e5a35c96d77df07bf64596ee1095f57c77c23ba453",
+    "src/core/network_io.cpp": "7e8be21269d602e1c56f4ed73cdc5af1dde7a26b66c417d71c4f81f45a8020df",
+    "src/dsv41/ds4_iq.cu": "3dab13728dff1f6f62a6e4ccf5456804c132cacb795349cef549d9b062e1d197",
+    "src/dsv41/ds4_iq.cuh": "0a88cb8ac43e3a20d4048c0c1428d58a92a968d65933fead3072f3ef6c73bcc0",
+    "src/kernels/cpu/native_expert.cpp": "47b2e68c5fb61746aafcb4b93e89861dfc315ce0ace3ff752da08745c44ebf0a",
+    "src/kernels/cpu/pool.cpp": "62da42b69088f98e6e20e5ed106a0e38a0e3989baae09305afe43d5a4db59595",
+    "src/kernels/cuda/native_router.cu": "88f159b8f2acb62efd5f3d8e6514555191ef689dee0cba0c5b95771905a7d85d",
+    "src/kimi2/chain.cpp": "d7cfdbba3dfc2f2455959dc7debe8263f0f6926730df6a9c3f41e5dc1c7c6209",
+    "src/kimi2/cpu_expert.cpp": "19d361583ef53c5a7560dc9cd7797b7447560ac17e150a6cf7f9824f0fcca25c",
+    "src/kimi2/expert_probe.cpp": "0b42f533ac7aedcbe9848f9b6edeb5d795bb23445ca74a76acde1af98a0dfd37",
+    "src/kimi2/layer0.cu": "365aba6bc3a8802581864c1665d75d789cbcc3ad554a31ea0b792cf32950698e",
+    "src/kimi2/moe.cu": "b773485d9259158a69713a14ae5c67a7c4ccaf6024be8eb36ad7f7f1f51c5af7",
+    "src/kimi2/router.cu": "aebffd852baa70909c720adf2364cb0da97918105a56e371eb03d497c731df94",
+    "src/kimi2/sequence.cpp": "0a77105f5585fea0b99f777536956e64ee9f895a86b2df912c942f9cb3fc8c25",
+    "src/kimi2/split.cpp": "9ff6a5a1355068ca345893fd6634132cba7d20324efa29b3cbc451e3d2453267",
+    "src/program/expert_worker.cu": "f9cf4189519f3d433faadffcd425e349d29ef516fe3f968aeaa28c31eaacc72e"
+  },
+  "binaries": {
+    "lucy_split_sha256": "662fb06b816dd7ce3eda52e5afb5c2c1034bf083ebc3798fc32daa2556ecf01d",
+    "astor_split_sha256": "59b27ae0c9d0df065495917ed5da72ac4de696457a61d1c3d3695c7175ec3520"
+  }
+}

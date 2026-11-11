@@ -1,0 +1,144 @@
+{
+  "gate": "K2",
+  "status": "PASS",
+  "model": "moonshotai/Kimi-K2-Instruct",
+  "revision": "fd1984e2b7a3350dbf7305fe73a4ede25c14de50",
+  "quant": "UD-IQ3_XXS",
+  "quant_revision": "23bf90d8196ddfcb3328a6f60c99a9bdb5c1dadf",
+  "model_manifest_sha256": "4cd738a1b49e9c4a6bc6770ac99783c9b3cac1b394d9040930ff77f2ace83e1a",
+  "strata_commit": "509b92fc8d00e5e0e91e2983eee21a2a19e42fbc",
+  "nodes": [
+    "lucy/CUDA/RTX3080",
+    "astor/HIP/gfx1030"
+  ],
+  "evidence_directory": "/mnt/work/kimi-k2/k2",
+  "executed": [
+    "Actual pinned upstream K2 attention, MLP and MoEGate definitions executed with same GGUF-decoded tensors",
+    "Three distinct scaled Gaussian inputs per layer/sublayer",
+    "Selected expert sets matched exactly; native upstream topk order preserved for weighted reduction",
+    "Complete expert0 IQ3_S and IQ4_XS tensors decoded bit-exactly by independent pinned ggml C and Python decoders",
+    "Pinned K2 tokenizer/chat template brought up separately; no K3 passed as K2"
+  ],
+  "measured": {
+    "layer0_final": {
+      "max_abs": 2.384185791015625e-07,
+      "relative_rms": 3.418338323513126e-08
+    },
+    "moe_final": {
+      "max_abs": 2.205371856689453e-06,
+      "relative_rms": 1.1085996902693296e-06
+    },
+    "routing_weights": {
+      "max_abs": 8.940696716308594e-08,
+      "relative_rms": 7.870719542779625e-08
+    },
+    "per_input_final_outputs": {
+      "layer0": [
+        {
+          "input_index": 0,
+          "max_abs": 7.450580596923828e-08,
+          "relative_rms": 1.0161414820686332e-06
+        },
+        {
+          "input_index": 1,
+          "max_abs": 1.7136335372924805e-07,
+          "relative_rms": 1.1351239947998693e-07
+        },
+        {
+          "input_index": 2,
+          "max_abs": 2.384185791015625e-07,
+          "relative_rms": 2.6929868113256816e-08
+        }
+      ],
+      "moe": [
+        {
+          "input_index": 0,
+          "max_abs": 2.1100277081131935e-10,
+          "relative_rms": 9.845839485933539e-07
+        },
+        {
+          "input_index": 1,
+          "max_abs": 1.909211277961731e-08,
+          "relative_rms": 1.0066427194033167e-06
+        },
+        {
+          "input_index": 2,
+          "max_abs": 2.205371856689453e-06,
+          "relative_rms": 1.1086082167821587e-06
+        }
+      ]
+    },
+    "expert_ids": [
+      [
+        216,
+        0,
+        301,
+        46,
+        22,
+        190,
+        103,
+        316
+      ],
+      [
+        192,
+        248,
+        166,
+        199,
+        301,
+        216,
+        109,
+        22
+      ],
+      [
+        173,
+        237,
+        311,
+        87,
+        361,
+        209,
+        29,
+        359
+      ]
+    ],
+    "top8_boundary_margins": [
+      0.0008717179298400879,
+      0.0009257197380065918,
+      0.013338327407836914
+    ],
+    "nonuniform_weights": true,
+    "quant_decode": [
+      {
+        "tensor": "blk.1.ffn_down_exps.weight",
+        "type": "IQ4_XS",
+        "elements": 14680064,
+        "bit_exact": true
+      },
+      {
+        "tensor": "blk.1.ffn_gate_exps.weight",
+        "type": "IQ3_S",
+        "elements": 14680064,
+        "bit_exact": true
+      },
+      {
+        "tensor": "blk.1.ffn_up_exps.weight",
+        "type": "IQ3_S",
+        "elements": 14680064,
+        "bit_exact": true
+      }
+    ],
+    "routing_weights_bitwise_equal": false
+  },
+  "criteria": {
+    "relative_RMS_max": 0.0001,
+    "absolute_difference_max": 0.001,
+    "inputs_min": 3,
+    "nonuniform_routing_required": true,
+    "initial_exact_expert_sets_and_weights_field": "Exact expert sets; routing weights compared under the frozen numerical tolerances, not bitwise equality.",
+    "exact_expert_sets": true
+  },
+  "remaining": [
+    "K3 consecutive layers and incremental compressed MLA cache",
+    "K4-K10 native GPU, distributed and full-model qualification NOT RUN"
+  ],
+  "blockers": []
+}

@@ -1,0 +1,241 @@
+{
+  "gate": "K1",
+  "status": "PASS",
+  "model": "moonshotai/Kimi-K2-Instruct",
+  "revision": "fd1984e2b7a3350dbf7305fe73a4ede25c14de50",
+  "quant": "UD-IQ3_XXS",
+  "quant_revision": "23bf90d8196ddfcb3328a6f60c99a9bdb5c1dadf",
+  "model_manifest_sha256": "4cd738a1b49e9c4a6bc6770ac99783c9b3cac1b394d9040930ff77f2ace83e1a",
+  "strata_commit": "509b92fc8d00e5e0e91e2983eee21a2a19e42fbc",
+  "nodes": [
+    "lucy/CUDA/RTX3080",
+    "astor/HIP/gfx1030"
+  ],
+  "evidence_directory": "/mnt/work/kimi-k2/k1",
+  "executed": [
+    "Parsed all nine pinned shard tensor tables",
+    "Fetched and decoded all 13 layer-0 dense/MLA tensors and exactly expert 0 gate/up/down from layer 1",
+    "Compared bounded float32 matrix products to independently accumulated float64 sums",
+    "Repeated first MLA network range and matched SHA-256"
+  ],
+  "measured": {
+    "slices": 16,
+    "bytes": 289568768,
+    "maximum_dot_absolute_error": 2.342268677957282e-06
+  },
+  "criteria": "Real dense/MLA layer and routed expert slices read, shapes/offsets/quant layouts decoded, finite CPU outputs and per-slice hashes recorded",
+  "remaining": [
+    "K2-K10 NOT RUN",
+    "Full-shard hashes are published LFS identities, not locally verified without complete files",
+    "Existing CUDA/HIP format coverage is source-only evidence"
+  ],
+  "blockers": [],
+  "slices": [
+    {
+      "tensor": "blk.0.attn_k_b.weight",
+      "type": "Q8_0",
+      "shape": [
+        128,
+        512,
+        64
+      ],
+      "offset": 1630930208,
+      "bytes": 4456448,
+      "sha256": "256703270f76f1b72ca137a04a0a96f85a4fd5b47797b41021c430002819fb0e",
+      "finite": true,
+      "dot_max_abs": 3.065873865892854e-08
+    },
+    {
+      "tensor": "blk.0.attn_kv_a_mqa.weight",
+      "type": "IQ4_XS",
+      "shape": [
+        7168,
+        576
+      ],
+      "offset": 1635386656,
+      "bytes": 2193408,
+      "sha256": "aacf1d821f19ed9ea6c31d36d89e88dd0b156f04459c50c2213f56028282fbd7",
+      "finite": true,
+      "dot_max_abs": 1.814820255852112e-06
+    },
+    {
+      "tensor": "blk.0.attn_kv_a_norm.weight",
+      "type": "F32",
+      "shape": [
+        512
+      ],
+      "offset": 1637580064,
+      "bytes": 2048,
+      "sha256": "50175f7a00aec7cea9ef10eb6447c5eac26fbd15586dd6c52c49ac4dab4672d3",
+      "finite": true,
+      "dot_max_abs": 2.7759623044687487e-08
+    },
+    {
+      "tensor": "blk.0.attn_norm.weight",
+      "type": "F32",
+      "shape": [
+        7168
+      ],
+      "offset": 1637582112,
+      "bytes": 28672,
+      "sha256": "1ef1dde6b94453219e285fd4ddd783cb4e9bbff6e9464e00cee2115645240848",
+      "finite": true,
+      "dot_max_abs": 6.131929026764738e-07
+    },
+    {
+      "tensor": "blk.0.attn_output.weight",
+      "type": "IQ4_XS",
+      "shape": [
+        8192,
+        7168
+      ],
+      "offset": 1637610784,
+      "bytes": 31195136,
+      "sha256": "996abd1650f65dabaf0273e102439436f13f09e73bdef9458a4ec6490c459fc2",
+      "finite": true,
+      "dot_max_abs": 7.17832521091033e-07
+    },
+    {
+      "tensor": "blk.0.attn_q_a.weight",
+      "type": "Q4_K",
+      "shape": [
+        7168,
+        1536
+      ],
+      "offset": 1668805920,
+      "bytes": 6193152,
+      "sha256": "6e5e8590ca56727c46159135996313156c1766c7438d725c4189ff33e17c5638",
+      "finite": true,
+      "dot_max_abs": 7.53634623151811e-07
+    },
+    {
+      "tensor": "blk.0.attn_q_a_norm.weight",
+      "type": "F32",
+      "shape": [
+        1536
+      ],
+      "offset": 1674999072,
+      "bytes": 6144,
+      "sha256": "43f39ea0b15018e4386a0ca927c6445a15b088895d3c3e8449568ecbe629a8a0",
+      "finite": true,
+      "dot_max_abs": 8.302424987505219e-07
+    },
+    {
+      "tensor": "blk.0.attn_q_b.weight",
+      "type": "IQ4_XS",
+      "shape": [
+        1536,
+        12288
+      ],
+      "offset": 1675005216,
+      "bytes": 10027008,
+      "sha256": "2a01543b112956d97e4410bd47d5bc8be698c790535511f714611b1281eb2153",
+      "finite": true,
+      "dot_max_abs": 2.283805810021633e-07
+    },
+    {
+      "tensor": "blk.0.attn_v_b.weight",
+      "type": "Q8_0",
+      "shape": [
+        512,
+        128,
+        64
+      ],
+      "offset": 1685032224,
+      "bytes": 4456448,
+      "sha256": "df8bc8e3e25b43a3071f435d31740efb0ded91cc6d7bf58391891274105285fd",
+      "finite": true,
+      "dot_max_abs": 6.137885522061737e-08
+    },
+    {
+      "tensor": "blk.0.ffn_down.weight",
+      "type": "IQ4_XS",
+      "shape": [
+        18432,
+        7168
+      ],
+      "offset": 1689488672,
+      "bytes": 70189056,
+      "sha256": "00f142dc719245ddd4a305a8e0587667cecfe1c4e592d839763a3b648a9d469a",
+      "finite": true,
+      "dot_max_abs": 2.3295841460324596e-06
+    },
+    {
+      "tensor": "blk.0.ffn_gate.weight",
+      "type": "IQ4_XS",
+      "shape": [
+        7168,
+        18432
+      ],
+      "offset": 1759677728,
+      "bytes": 70189056,
+      "sha256": "57e3b81ce64ab4a2be88fec1e4ddf522973b8461d183e0b83d8b3bc93ce94705",
+      "finite": true,
+      "dot_max_abs": 9.32906933481803e-07
+    },
+    {
+      "tensor": "blk.0.ffn_norm.weight",
+      "type": "F32",
+      "shape": [
+        7168
+      ],
+      "offset": 1829866784,
+      "bytes": 28672,
+      "sha256": "f8b381dc5134bf0e2097555f73219fd8892707ee75a389ed0e75c06c883e5b45",
+      "finite": true,
+      "dot_max_abs": 2.456660475047556e-07
+    },
+    {
+      "tensor": "blk.0.ffn_up.weight",
+      "type": "IQ4_XS",
+      "shape": [
+        7168,
+        18432
+      ],
+      "offset": 1829895456,
+      "bytes": 70189056,
+      "sha256": "7ab355cd1f8074dad1e987b4d21983543cd46f44e094d3af24f84a01981e5ceb",
+      "finite": true,
+      "dot_max_abs": 2.111341010468948e-06
+    },
+    {
+      "tensor": "blk.1.ffn_down_exps.weight",
+      "type": "IQ4_XS",
+      "shape": [
+        2048,
+        7168
+      ],
+      "offset": 1958644512,
+      "bytes": 7798784,
+      "sha256": "67b7c0eed21523b33d1bde8ffd1f994f2be56bf6e536992af6ce3c41bc873d2a",
+      "finite": true,
+      "dot_max_abs": 5.170421277789217e-07
+    },
+    {
+      "tensor": "blk.1.ffn_gate_exps.weight",
+      "type": "IQ3_S",
+      "shape": [
+        7168,
+        2048
+      ],
+      "offset": 4965419808,
+      "bytes": 6307840,
+      "sha256": "ef1e320b592043e29b3dd92e535f9fc88023b6902a281407af2c0646f6848507",
+      "finite": true,
+      "dot_max_abs": 1.117146052775908e-06
+    },
+    {
+      "tensor": "blk.1.ffn_up_exps.weight",
+      "type": "IQ3_S",
+      "shape": [
+        7168,
+        2048
+      ],
+      "offset": 7406467872,
+      "bytes": 6307840,
+      "sha256": "4f92c9d942477aba10852acf0de73d9423ed862a1a752c335209f0f1d7eb4e1d",
+      "finite": true,
+      "dot_max_abs": 2.342268677957282e-06
+    }
+  ]
+}

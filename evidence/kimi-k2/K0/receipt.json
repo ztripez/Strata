@@ -1,0 +1,37 @@
+{
+  "gate": "K0",
+  "status": "PASS",
+  "model": "moonshotai/Kimi-K2-Instruct",
+  "revision": "fd1984e2b7a3350dbf7305fe73a4ede25c14de50",
+  "quant": "UD-IQ3_XXS",
+  "quant_revision": "23bf90d8196ddfcb3328a6f60c99a9bdb5c1dadf",
+  "model_manifest_sha256": "4cd738a1b49e9c4a6bc6770ac99783c9b3cac1b394d9040930ff77f2ace83e1a",
+  "strata_commit": "509b92fc8d00e5e0e91e2983eee21a2a19e42fbc",
+  "nodes": [
+    "lucy/CUDA/RTX3080",
+    "astor/HIP/gfx1030"
+  ],
+  "evidence_directory": "/mnt/work/kimi-k2/k0",
+  "executed": [
+    "Pinned source config/index/implementation/tokenizer and quant shard metadata",
+    "Parsed all nine GGUF tensor tables by HTTP ranges",
+    "Read-only memory/disk/NFS/route inventory on both nodes"
+  ],
+  "measured": {
+    "pack_bytes": 416622218560,
+    "packed_nonexpert_bytes": 7613972480,
+    "packed_expert_bytes": 409001263104,
+    "all_nonexpert_bf16_bytes": 23444417536,
+    "compressed_KV_bf16_2048_all_layers_bytes": 143917056,
+    "nas_available_bytes_at_inventory": 4706123382784,
+    "lucy_work_available_bytes_at_inventory": 98452897792,
+    "astor_work_available_bytes_at_inventory": 5857529856,
+    "assessment": "Shared backing fits reported NAS free space; full local copies do not fit work disks. Packed nonexpert tensors ~7.09 GiB across nodes, but expanding all to BF16 uses ~21.83 GiB before expert slots, scratch and allocator overhead. Keep dense quant kernels; runtime allocation and 14/9 GiB device, RSS<48 GiB limits remain unproved."
+  },
+  "criteria": "Exact identities, reusable/missing source components, storage/compute fit estimate and pinned Strata baseline recorded; no runtime fit claimed",
+  "remaining": [
+    "K1 decode receipt",
+    "K2-K10 NOT RUN"
+  ],
+  "blockers": []
+}

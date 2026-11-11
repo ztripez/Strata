@@ -151,10 +151,10 @@ __global__ void route_multi(const float* __restrict__ logits, int32_t* __restric
 // The same contract for other (experts, top-k) shapes - Qwen3.6-35B-A3B's 256 / 8 - one warp per token, n_tok tokens
 // (8 per block).  The 512 / 10 path keeps its own kernels above (the Flash-Next bits), this template is only used
 // for the other shapes.
-template <int NE, int K>
+template <int NE, int K, bool Sigmoid = false>
 __launch_bounds__(256, 1)
 __global__ void route_topk(const float* __restrict__ logits, int32_t* __restrict__ ids, float* __restrict__ weights,
-                           int n_tok) {
+                           int n_tok, const float* bias = nullptr, float route_scale = 1.0f) {
     static_assert(NE % 32 == 0 && K <= 32, "experts in whole warps, at most 32 picks");
     constexpr int V = NE / 32;
     const int tk = (int) blockIdx.x * 8 + (int) threadIdx.y;
@@ -164,6 +164,10 @@ __global__ void route_topk(const float* __restrict__ logits, int32_t* __restrict
     float values[V];
 #pragma unroll
     for (int i = 0; i < V; ++i) values[i] = logits[lane + i * 32];
+    if constexpr (Sigmoid) {
+#pragma unroll
+        for (int i = 0; i < V; ++i) values[i] = 1.0f / (1.0f + expf(-values[i]));
+    } else {
     float maximum = -INFINITY;
 #pragma unroll
     for (int i = 0; i < V; ++i) maximum = max(maximum, values[i]);
@@ -180,13 +184,15 @@ __global__ void route_topk(const float* __restrict__ logits, int32_t* __restrict
         values[i] *= reciprocal;
         if (__isnanf(values[i])) values[i] = -FLT_MAX;
     }
+    }
     float selected = 0.0f, selected_sum = 0.0f;
     for (int rank = 0; rank < K; ++rank) {
-        float best = values[0];
+        float best = Sigmoid ? values[0] + bias[lane] : values[0];
         int expert = lane;
 #pragma unroll
         for (int i = 1; i < V; ++i) {
-            if (values[i] > best) { best = values[i]; expert = lane + i * 32; }
+            const float choice = Sigmoid ? values[i] + bias[lane + i * 32] : values[i];
+            if (choice > best) { best = choice; expert = lane + i * 32; }
         }
 #pragma unroll
         for (int mask = 16; mask; mask >>= 1) {
@@ -194,16 +200,22 @@ __global__ void route_topk(const float* __restrict__ logits, int32_t* __restrict
             const int other_id = __shfl_xor_sync(0xffffffffu, expert, mask, 32);
             if (other > best || (other == best && other_id < expert)) { best = other; expert = other_id; }
         }
+        float score = best;
+        if constexpr (Sigmoid) score = __shfl_sync(0xffffffffu, values[expert / 32], expert & 31, 32);
         if ((expert & 31) == lane) {
             values[expert / 32] = -INFINITY;
             ids[rank] = expert;
-            selected_sum += best;
+            selected_sum += score;
         }
-        if (rank == lane) selected = best;
+        if (rank == lane) selected = score;
     }
-    selected_sum = max(warp_sum(selected_sum), 6.103515625e-5f);
+    if constexpr (Sigmoid) selected_sum = warp_sum(selected_sum) + 1e-20f;
+    else selected_sum = max(warp_sum(selected_sum), 6.103515625e-5f);
     const float inverse_selected_sum = 1.0f / selected_sum;
-    if (lane < K) weights[lane] = selected * inverse_selected_sum;
+    if (lane < K) {
+        if constexpr (Sigmoid) weights[lane] = selected * inverse_selected_sum * route_scale;
+        else weights[lane] = selected * inverse_selected_sum;
+    }
 }
 bool valid(const void* p, size_t bytes) {
     const auto address = reinterpret_cast<uintptr_t>(p);
@@ -246,6 +258,16 @@ void native_router_topk(const float* logits, int32_t* ids, float* weights, int n
         throw std::invalid_argument("native_router_topk: a stream, a supported (experts, k) and aligned buffers");
     route_topk<256, 8><<<(unsigned) ((n_tok + 7) / 8), dim3(32, 8), 0, static_cast<cudaStream_t>(stream)>>>(
         logits, ids, weights, n_tok);
+    const auto error = cudaGetLastError();
+    if (error != cudaSuccess) throw std::runtime_error(cudaGetErrorString(error));
+}
+
+void native_router_kimi2(const float* logits, const float* bias, int32_t* ids, float* weights, int n_tok, void* stream) {
+    if (!stream || n_tok < 1 || !valid(logits, (size_t) n_tok * 384 * 4) || !valid(bias, 384 * 4) ||
+        !valid(ids, (size_t) n_tok * 8 * 4) || !valid(weights, (size_t) n_tok * 8 * 4))
+        throw std::invalid_argument("K2 routing requires a stream and aligned 384-expert/8-pick buffers");
+    route_topk<384, 8, true><<<(unsigned) ((n_tok + 7) / 8), dim3(32, 8), 0, static_cast<cudaStream_t>(stream)>>>(
+        logits, ids, weights, n_tok, bias, 2.827f);
     const auto error = cudaGetLastError();
     if (error != cudaSuccess) throw std::runtime_error(cudaGetErrorString(error));
 }

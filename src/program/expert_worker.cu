@@ -12,6 +12,12 @@
 #include "strata/kernels/iq_kernels.hpp"
 #include "strata/kernels/native_mmvq.hpp"
 #include "strata/kernels/native_moe.hpp"
+#ifdef STRATA_KIMI2_LIBRARY
+#include "strata/kimi2/engine.hpp"
+#include "strata/kimi2/model.hpp"
+#include "strata/kernels/cpu/native_expert.hpp"
+#include <fstream>
+#endif
 #include <set>
 #include <thread>
 
@@ -84,6 +90,9 @@ __global__ void k_reduce_weighted_parts(const float *__restrict__ parts, const W
 
 struct WorkerLayerSource {
     K::NativeExpertLayout layout{};
+#ifdef STRATA_KIMI2_LIBRARY
+    std::string fixture;
+#endif
     const uint8_t *src_g = nullptr;
     const uint8_t *src_u = nullptr;
     const uint8_t *src_d = nullptr;
@@ -93,6 +102,11 @@ struct WorkerLayerSource {
 };
 
 struct WorkerContext {
+#ifdef STRATA_KIMI2_LIBRARY
+    bool kimi2 = false, kimi2_full = false;
+    std::string kimi2_identity;
+    std::unique_ptr<strata::kimi2::Model> kimi2_model;
+#endif
     int device = 0;
     std::string device_name;
     std::shared_ptr<strata::GgufModel> gguf;
@@ -195,6 +209,19 @@ bool check_cuda(cudaError_t e, const char *what, std::string &err) {
 }
 
 void pack_expert_blob(const WorkerLayerSource &L, int32_t e, uint8_t *dst) {
+#ifdef STRATA_KIMI2_LIBRARY
+    if(!L.fixture.empty()){
+        for(int role=0;role<3;++role){
+            const char* name=role==0?"gate":role==1?"up":"down";
+            const size_t bytes=role==2?L.src_dsz:L.src_gsz;
+            const size_t offset=role==0?0:role==1?L.layout.up_off:L.layout.down_off;
+            std::ifstream f(L.fixture+"/ffn_"+name+"_exps.weight.expert"+std::to_string(e)+".bin",std::ios::binary|std::ios::ate);
+            if(!f || static_cast<size_t>(f.tellg())!=bytes)throw std::runtime_error("missing/wrong K2 expert slice");
+            f.seekg(0);if(!f.read(reinterpret_cast<char*>(dst+offset),bytes))throw std::runtime_error("K2 expert slice read failed");
+        }
+        return;
+    }
+#endif
     std::memcpy(dst, L.src_g + static_cast<size_t>(e) * L.src_gsz, L.src_gsz);
     std::memcpy(dst + L.layout.up_off, L.src_u + static_cast<size_t>(e) * L.src_gsz, L.src_gsz);
     std::memcpy(dst + L.layout.down_off, L.src_d + static_cast<size_t>(e) * L.src_dsz, L.src_dsz);
@@ -217,6 +244,45 @@ bool init_worker_model(const std::string &model_path, int device, WorkerContext 
         return false;
     ctx.device_name = prop.name;
 
+#ifdef STRATA_KIMI2_LIBRARY
+    if(ctx.kimi2){
+        ctx.geom.n_embd=7168;ctx.geom.n_ff=2048;ctx.geom.n_layers=61;ctx.geom.n_expert=384;
+        ctx.geom.n_expert_used=8;ctx.top_k=8;ctx.total_layers=61;
+        if(ctx.kimi2_full)ctx.kimi2_model=std::make_unique<strata::kimi2::Model>(model_path);
+        const std::string identity_path=ctx.kimi2_full?ctx.kimi2_identity:model_path+"/fixture.identity";
+        std::string identity;std::ifstream id(identity_path);id>>identity;
+        if(identity.size()!=64)throw std::runtime_error("K2 fixture requires exact manifest identity");
+        for(int i=0;i<32;++i)ctx.model_sha256[i]=static_cast<uint8_t>(std::stoul(identity.substr(2*i,2),nullptr,16));
+        ctx.fingerprint=compute_model_fingerprint(61,384,7168,2048);
+        ctx.layers.resize(61);
+        for(int l=1;l<61;++l){
+            const std::string dir=model_path+"/experts"+std::to_string(l);
+            int gu=0,down=0;std::ifstream g(dir+"/ffn_gate_exps.type"),d(dir+"/ffn_down_exps.type");
+            if(ctx.kimi2_full){
+                gu=ctx.kimi2_model->type("blk."+std::to_string(l)+".ffn_gate_exps.weight");
+                down=ctx.kimi2_model->type("blk."+std::to_string(l)+".ffn_down_exps.weight");
+            }else{
+                if(!g && !d)continue;
+                if(!(g>>gu) || !(d>>down))throw std::runtime_error("invalid K2 fixture types");
+            }
+            strata::kernels::cpu::NativeFmt fmt;std::string error;
+            if(!strata::kernels::cpu::native_fmt(gu,down,7168,2048,fmt,error,true))throw std::runtime_error("unsupported K2 fixture expert format: "+error);
+            auto& wl=ctx.layers[l];
+            if(ctx.kimi2_full){
+                const std::string prefix="blk."+std::to_string(l)+".";
+                wl.src_g=ctx.kimi2_model->data(prefix+"ffn_gate_exps.weight");
+                wl.src_u=ctx.kimi2_model->data(prefix+"ffn_up_exps.weight");
+                wl.src_d=ctx.kimi2_model->data(prefix+"ffn_down_exps.weight");
+            }else wl.fixture=dir;
+            wl.layout.gu_type=gu;wl.layout.d_type=down;wl.layout.n_embd=7168;wl.layout.n_ff=2048;
+            wl.layout.gu_row=fmt.gu_row;wl.layout.d_row=fmt.d_row;
+            wl.layout.up_off=fmt.up_off;wl.layout.down_off=fmt.down_off;wl.layout.bytes=fmt.bytes;
+            wl.src_gsz=2048*wl.layout.gu_row;wl.src_dsz=7168*wl.layout.d_row;
+            wl.slot_stride=(wl.layout.bytes+255u)&~size_t(255u);
+        }
+    }else
+#endif
+    {
     try {
         ctx.gguf = std::make_shared<strata::GgufModel>(strata::GgufModel::open(model_path));
     } catch (const std::exception &ex) {
@@ -275,13 +341,14 @@ bool init_worker_model(const std::string &model_path, int device, WorkerContext 
         wl.src_d = gm.shard(sd).tensor_data(*td);
     }
 
+    } // model-specific source binding; allocations and protocol remain shared
     for (auto &e : ctx.timing)
         if (!check_cuda(cudaEventCreate(&e), "cudaEventCreate", err))
             return false;
-    ctx.slot_of.assign(static_cast<size_t>(ctx.total_layers) * static_cast<size_t>(g.n_expert), -1);
+    ctx.slot_of.assign(static_cast<size_t>(ctx.total_layers) * static_cast<size_t>(ctx.geom.n_expert), -1);
 
-    const size_t N = static_cast<size_t>(g.n_embd);
-    const size_t FF = static_cast<size_t>(g.n_ff);
+    const size_t N = static_cast<size_t>(ctx.geom.n_embd);
+    const size_t FF = static_cast<size_t>(ctx.geom.n_ff);
     const size_t q8_bytes = K::native_q8_1_bytes(static_cast<int>(N), 1) * kMaxTokens;
     const size_t scratch_bytes = K::native_expert_scratch_bytes(kMaxCap, static_cast<int64_t>(FF));
 
@@ -326,7 +393,7 @@ bool install_worker_plan(WorkerContext &ctx, const ExpertWorkerPair *pairs, uint
     for (uint32_t i = 0; i < n_pairs; ++i) {
         const int32_t l = pairs[i].layer;
         const int32_t e = pairs[i].expert;
-        if (l < 0 || l >= ctx.total_layers || e < 0 || e >= n_exp) {
+        if (l < 0 || l >= ctx.total_layers || e < 0 || e >= n_exp || !ctx.layers[l].slot_stride) {
             err = "pair (" + std::to_string(l) + "," + std::to_string(e) + ") out of bounds";
             out_ready.status = static_cast<uint32_t>(ExpertWorkerErrorCode::PLAN_LOAD_FAILED);
             return false;
@@ -549,9 +616,24 @@ bool execute_worker_request(WorkerContext &ctx, const ExpertWorkerExecuteFixed &
     if (!check_cuda(cudaEventRecord(ctx.timing[1], ctx.stream), "kernel timing", err))
         return false;
     const WorkerLayerSource &wl = ctx.layers[static_cast<size_t>(ef.layer)];
+#ifdef STRATA_KIMI2_LIBRARY
+    if(ctx.kimi2){
+        for(int g=0;g<n_groups;++g){
+            const int first=gm->start[g],rows=gm->start[g+1]-first;
+            std::vector<float> input(static_cast<size_t>(rows)*N);
+            for(int i=0;i<rows;++i)std::copy_n(acts+static_cast<size_t>(gm->tok[first+i])*N,N,input.data()+static_cast<size_t>(i)*N);
+            const auto result=strata::kimi2::run_cached_expert(reinterpret_cast<const uint8_t*>(gm->ptr[g]),wl.layout.gu_type,wl.layout.d_type,input);
+            if(!check_cuda(cudaMemcpyAsync(ctx.d_parts+static_cast<size_t>(first)*N,result.data(),result.size()*4,cudaMemcpyHostToDevice,ctx.stream),"K2 expert parts",err) ||
+               !check_cuda(cudaStreamSynchronize(ctx.stream),"K2 expert completion",err))return false;
+        }
+    }else
+#endif
+    {
     K::quantize_q8_1_rows(ctx.d_x, ef.n_tokens, N, ctx.d_q8, ctx.stream);
     K::native_expert_grouped(wl.layout, ctx.d_meta->ptr, ctx.d_meta->start, &ctx.d_meta->count, ctx.d_meta->dst,
                              ctx.d_meta->tok, n_groups, compact, ctx.d_q8, ctx.d_scratch, ctx.d_parts, ctx.stream);
+
+    }
 
     k_reduce_weighted_parts<<<dim3((N + 255) / 256, ef.n_tokens), 256, 0, ctx.stream>>>(ctx.d_parts, ctx.d_meta,
                                                                                         ctx.d_sum, N);
@@ -747,6 +829,9 @@ bool serve_session(int cfd, WorkerContext &ctx, int timeout_ms, bool verbose) {
 
 int main(int argc, char **argv) {
     std::string model_path;
+#ifdef STRATA_KIMI2_LIBRARY
+    bool kimi2=false,kimi2_full=false;std::string kimi2_identity;
+#endif
     std::string bind_ep = "127.0.0.1:19450";
     int device = 0;
     int timeout_ms = 30000;
@@ -762,6 +847,12 @@ int main(int argc, char **argv) {
             }
             return argv[++i];
         };
+#ifdef STRATA_KIMI2_LIBRARY
+        if (a == "--kimi2-fixture") { model_path=next();kimi2=true; }
+        else if(a=="--kimi2-model"){model_path=next();kimi2=true;kimi2_full=true;}
+        else if(a=="--kimi2-identity"){kimi2_identity=next();}
+        else
+#endif
         if (a == "--model")
             model_path = next();
         else if (a == "--bind")
@@ -783,7 +874,11 @@ int main(int argc, char **argv) {
         }
     }
 
-    if (timeout_ms <= 0 || timeout_ms > 600000 || max_sessions < 0) {
+    int timeout_limit = 600000;
+#ifdef STRATA_KIMI2_LIBRARY
+    if (kimi2_full) timeout_limit = 3600000;
+#endif
+    if (timeout_ms <= 0 || timeout_ms > timeout_limit || max_sessions < 0) {
         std::fprintf(stderr, "strata-expert-worker: invalid timeout or session limit\n");
         return 2;
     }
@@ -805,6 +900,9 @@ int main(int argc, char **argv) {
     }
 
     WorkerContext ctx;
+#ifdef STRATA_KIMI2_LIBRARY
+    ctx.kimi2=kimi2;ctx.kimi2_full=kimi2_full;ctx.kimi2_identity=kimi2_identity;
+#endif
     std::string err;
     try {
         if (!init_worker_model(model_path, device, ctx, err)) {
@@ -816,6 +914,10 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+#ifdef STRATA_KIMI2_LIBRARY
+    if(ctx.kimi2 && ctx.kimi2_full)std::fprintf(stderr,"K2 FULL GGUF MAPPINGS: all61 layer/expert tables addressable; no full hot-copy allocation\n");
+    if(ctx.kimi2 && !ctx.kimi2_full)std::fprintf(stderr,"K2 PARTIAL FIXTURE: original selected expert slices only; F32 decoded-weight arithmetic; not a full checkpoint load\n");
+#endif
     size_t free_b = 0, total_b = 0;
     if (!check_cuda(cudaMemGetInfo(&free_b, &total_b), "cudaMemGetInfo", err)) {
         std::fprintf(stderr, "strata-expert-worker: %s\n", err.c_str());

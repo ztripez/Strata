@@ -1,0 +1,25 @@
+{
+  "model": "moonshotai/Kimi-K2-Instruct",
+  "quant": "UD-IQ3_XXS",
+  "gates": {
+    "K0": "PASS",
+    "K1": "PASS",
+    "K2": "PASS",
+    "K3": "PASS",
+    "K4": "PASS",
+    "K5": "PASS",
+    "K6": "PASS",
+    "K7": "FAIL",
+    "K8": "NOT RUN",
+    "K9": "NOT RUN",
+    "K10": "NOT RUN"
+  },
+  "scores": {
+    "F": "NOT RUN",
+    "C": "NOT RUN",
+    "P": "NOT RUN"
+  },
+  "full_model_download_authorized_by_gates": true,
+  "next": "K7: bounded full-K2 pool timeout build, replay captured layer59 MoE, then retry unchanged256-token prefill and16 autoregressive positions",
+  "raw_capture_root": "/mnt/work/kimi-k2"
+}

@@ -1,0 +1,137 @@
+{
+  "gate": "K3",
+  "status": "PASS",
+  "model": "moonshotai/Kimi-K2-Instruct",
+  "revision": "fd1984e2b7a3350dbf7305fe73a4ede25c14de50",
+  "quant": "UD-IQ3_XXS",
+  "quant_revision": "23bf90d8196ddfcb3328a6f60c99a9bdb5c1dadf",
+  "model_manifest_sha256": "4cd738a1b49e9c4a6bc6770ac99783c9b3cac1b394d9040930ff77f2ace83e1a",
+  "strata_commit": "509b92fc8d00e5e0e91e2983eee21a2a19e42fbc",
+  "nodes": [
+    "lucy/CUDA/RTX3080",
+    "astor/HIP/gfx1030"
+  ],
+  "evidence_directory": "/mnt/work/kimi-k2/k3",
+  "executed": [
+    "Pinned tokenizer/chat template produced IDs with EOS163585 and vocabulary163840",
+    "Fetched 24 exact token embedding rows and layer1 attention/norm slices",
+    "Launched real two-layer compressed MLA sequence comparison; prefill currently executing selected real MoE experts",
+    "Reproducible tokenizer script reproduced the exact 24 tested IDs, EOS163585 and vocabulary163840"
+  ],
+  "measured": {
+    "comparisons": {
+      "incremental_layer0": {
+        "max_abs": 5.960464477539062e-07,
+        "relative_rms": 3.7472875646926695e-07
+      },
+      "upstream_layer0": {
+        "max_abs": 1.1920928955078125e-07,
+        "relative_rms": 2.508286343072541e-07
+      },
+      "cache0_latent": {
+        "max_abs": 5.21540641784668e-08,
+        "relative_rms": 3.6892868138238555e-07
+      },
+      "cache0_rope": {
+        "max_abs": 4.76837158203125e-06,
+        "relative_rms": 1.8193925654941268e-07
+      },
+      "incremental_layer1": {
+        "max_abs": 7.152557373046875e-07,
+        "relative_rms": 4.3803686367027694e-07
+      },
+      "upstream_layer1": {
+        "max_abs": 1.7881393432617188e-07,
+        "relative_rms": 3.260830396811798e-07
+      },
+      "cache1_latent": {
+        "max_abs": 2.9802322387695312e-08,
+        "relative_rms": 5.680361141457979e-07
+      },
+      "cache1_rope": {
+        "max_abs": 9.5367431640625e-06,
+        "relative_rms": 2.9299272341631877e-07
+      }
+    },
+    "token_ids": [
+      163594,
+      14062,
+      163601,
+      3900,
+      554,
+      24980,
+      72,
+      11,
+      519,
+      22572,
+      26626,
+      5232,
+      673,
+      30218,
+      10065,
+      22572,
+      13,
+      163586,
+      198,
+      163587,
+      2482,
+      163601,
+      91561,
+      4730
+    ],
+    "input_tokens": 16,
+    "incremental_teacher_forced_positions": 8,
+    "all_arrays_finite": true,
+    "expert_sets_exact_across_modes": true,
+    "KV_each_layer": {
+      "latent": [
+        24,
+        512
+      ],
+      "rotary_key": [
+        24,
+        64
+      ]
+    }
+  },
+  "criteria": {
+    "input_tokens": 16,
+    "incremental_teacher_forced_positions": 8,
+    "relative_RMS_max": 0.0001,
+    "absolute_difference_max": 0.001,
+    "cache_shape_each_layer": {
+      "latent": [
+        24,
+        512
+      ],
+      "rotary_key": [
+        24,
+        64
+      ]
+    },
+    "three_modes": [
+      "24-position causal prefill",
+      "16-position prefill plus 8 single-token steps",
+      "upstream expanded-MLA 24-position reference"
+    ]
+  },
+  "remaining": [
+    "K4-K10 native GPU, contiguous native chain, distributed and full-model qualification NOT RUN",
+    "No sampled generation or logits claim from two layers"
+  ],
+  "blockers": [],
+  "execution_state": "COMPLETED",
+  "execution_handle": {
+    "session_id": 18881,
+    "pid": 3868354,
+    "log": "/mnt/work/kimi-k2/k3/two-layer.log"
+  },
+  "tokenizer_capture": "/mnt/work/kimi-k2/k3/tokenizer.json",
+  "generation_stop_clarification": {
+    "tokenizer_generic_eos": 163585,
+    "instruct_generation_eos": 163586,
+    "pack_eos": 163586,
+    "source": "pinned generation_config.json and GGUF tokenizer.ggml.eos_token_id",
+    "scope": "tokenizer IDs and earlier numerical comparisons are unchanged; generated-text stop semantics belong to K7+"
+  }
+}

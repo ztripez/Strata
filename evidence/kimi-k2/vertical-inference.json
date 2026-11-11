@@ -1,0 +1,43 @@
+{
+  "milestone": "full Kimi K2 vertical inference",
+  "status": "PASS",
+  "scope": "user-approved short request; original K7-K10 qualification deferred",
+  "prompt_tokens": 27,
+  "generated_token_ids": [
+    18699,
+    1459
+  ],
+  "decoded_text": "Hi there",
+  "layers": 61,
+  "actual_max_position": 29,
+  "exits": {
+    "prefix": {
+      "exit_code": 0,
+      "elapsed_seconds": 7040.198377370834,
+      "rss_hwm_kib": 2487260
+    },
+    "suffix": {
+      "exit_code": 0,
+      "elapsed_seconds": 7095.753020524979,
+      "rss_hwm_kib": 41567520
+    },
+    "lucy-expert": {
+      "exit_code": 0,
+      "elapsed_seconds": 7124.742303609848,
+      "rss_hwm_kib": 307388
+    },
+    "astor-expert": {
+      "exit_code": 0,
+      "elapsed_seconds": 7107.220248937607,
+      "rss_hwm_kib": 214936
+    }
+  },
+  "remote_assignments": {
+    "lucy_to_astor": 1,
+    "astor_to_lucy": 3
+  },
+  "remote_fallbacks": 0,
+  "hardware_lease_released": true,
+  "evidence_directory": "/mnt/storage/models/strata-kimi-k2-evidence/short-full-run1",
+  "limits": "No 2K, quality, capacity or performance qualification claimed."
+}
