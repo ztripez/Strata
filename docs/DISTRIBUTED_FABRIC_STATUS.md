@@ -1,8 +1,40 @@
 # Distributed fabric checkpoint
 
+Current execution priority (11 November 2026): [complete published Q3 capacity](DEEPSEEK_Q3_CAPACITY.md).
+The 2.00-bpw reference and accepted E5 checkpoint are frozen. Both Q3 and Q4
+are downloaded. At 10:25 CET, Q3 retry5 has completed both actual 2K requests at
+cut28, including bidirectional remote CPU experts with zero fallbacks and no
+monitored memory-ceiling exceedances. Hybrid decode measured 0.512 tokens/s in
+one request; the historical 5 tokens/s target remains unmet. The frozen quality check failed:
+the layer-only task check lost the baseline prime exact-answer pass, returning
+`{"answer":true}` rather than `true`. Hybrid quality and numerical comparison
+were not run. Astor's generation service was restored and embedding stayed
+active. See the Q3 report for receipts and limits. The original 2.00-bpw E0-E8
+checkpoint below stays frozen. The user subsequently confirmed Q3 verticality
+complete and deferred quality refinement and performance. Those historical
+criteria do not block the next objective of getting Pro running.
+
+Shared hardware coordination is now active through
+[the canonical hardware lock](HARDWARE_LOCK.md), across both worktrees and hosts.
+Q3 retry5 released both reservations after cleanup and restoration. Both
+workstreams use the same CLI for GPU and heavy CPU/RAM/storage fixtures. Read
+live lock status before any new model job; a completed job owns no reservation.
+
+GPU-free protocol harness update, 11 November 2026: `deepseek_layer_rpc_test`
+passes real loopback TCP payload-fragmentation and coalescing cases, plus six
+header/payload disconnect points. Failed partial reads preserve the caller's
+frame. These extend the existing session/ACK/deadline/interruption tests; no wire
+format or model execution changed, and this is not additional quality evidence.
+Rerun the focused check after building its target:
+
+```sh
+cmake --build /var/tmp/strata-network-contract-tests --target deepseek_layer_rpc_test -j 2
+ctest --test-dir /var/tmp/strata-network-contract-tests -R '^deepseek_layer_rpc_test$' --output-on-failure
+```
+
 ## Current gate status
 
-Verified 10 November 2026 at 08:32 CET, branch `feat/distributed-experts`.
+Verified 10 November 2026 at 23:46 CET, branch `feat/distributed-experts`.
 This table is the authoritative current summary of the
 [E0–E8 acceptance gates](NETWORK_SHARDED_DEEPSEEK_PLAN.md#6-success-gates-and-dependency-order).
 Update it from completed receipts and live process state when a campaign advances.
@@ -11,6 +43,14 @@ quality, capacity, performance or release acceptance.
 For implementation and rerun decisions, use this table first; use the historical
 entries to locate the original evidence and its limits.
 
+Execution direction: the user has authorized
+[experimental acceptance of bounded numerical deviation](DEEPSEEK_EXPERIMENTAL_CHECKPOINT.md),
+after completion of the frozen corpus with comparable behavior and retained
+baseline task passes. Original E5 thresholds remain unchanged. Do not report a
+strict E5 pass or start further numerical refinement without new evidence of a
+functional regression. After experimental acceptance, freeze the checkpoint and
+advance to E7 capacity, resource allocation and performance.
+
 | Gate | Current status | Verified scope and remaining work |
 | --- | --- | --- |
 | E0 — artifacts, machines and budgets | PARTIAL | Seven pinned files and native identities verified on both hosts; cut20 fits tested budgets. Final hardware/multi-pass memory checks remain open. |
@@ -18,15 +58,25 @@ entries to locate the original evidence and its limits.
 | E2 — layer-state replay | PASS, bounded | HIP cuts20/24 passed 128-step exact replay/state checks, including assigned-only cut20. Mixed-backend quality is separate. |
 | E3 — network layer-only inference | PASS, functional | Mixed-host 128-step probes, EOS, restart and stale-session rejection passed. Corrected mixed-host layer-loss trial passed at 08:16 CET: clean abort in 3.85 seconds, driver exit 0. E5 quality remains separate. |
 | E4 — hybrid layers plus remote MoE | PASS, bounded | Tiered arithmetic, static hybrid, exact empty ownership and both expert-loss recoveries passed. Separate mixed-host layer clean-abort contract also passed under E3. |
-| E5 — numerical and task quality | CONTROL PASS; quality QUEUED | CPU2 capture/reset passed; CPU8/2K is RUNNING. Fresh quality awaits that control. No held-out model output has been collected. |
+| E5 — numerical and task quality | EXPERIMENTALLY ACCEPTED AND FROZEN; strict E5 FAIL | Full cut24 corpus: five prompts/1,000 positions, 989 agreements (98.9%), 11 disagreements, mean KL 0.00150211 in both modes. Hybrid ordered raw-logit digests match layer-only for every prompt. All four baseline passes retained out of eight tasks. Accepted under the user's explicit decision; original 99% criterion and failures preserved. Remote GPU expert quality remains unqualified. Complete evidence archived under `/mnt/storage/strata-evidence/deepseek-e5-experimental-20261110/`. |
 | E6 — network orchestrator | SOFTWARE CONTROLS ONLY | Coordinator startup barrier, rollback and lifecycle controls pass; real SSH status/stop/binding checks pass without model staging. Actual model installation, quarantine/reload qualification and measured ranking remain open. |
-| E7 — capacity, speed and faults | NOT RUN | Functional/usable C1 and paired speed gates remain open. C2 model-size scaling is a separate follow-up. |
+| E7 — capacity, speed and faults | PARTIAL; actual 2K fit demonstrated | Four requests completed actual 2,048-token sequences (1,900 input + 148 generated), using cut20/cut24 on NFS then staged local backbone. Driver and all 16 native processes exited 0, with zero fallbacks, telemetry gaps or monitored 14/9 GiB VRAM and 48 GiB per-process RSS exceedances. Staged cut20: 5.032 prefill / 2.338 decode tokens/s, versus 2.816 / 1.332 on NFS; NFS reads fell 98.26%. All 148 emitted tokens and row-job counts matched within each storage pair. Cut24 decode changed little. [Measurements and limits](DEEPSEEK_CAPACITY_PERFORMANCE.md). Best decode remains below the frozen 5-token/s target; C2 and optimizer prediction accuracy remain open. |
 | E8 — reproducible release checkpoint | NOT READY | Quality, orchestration, capacity/performance and final hardware evidence remain incomplete. |
 
 `PASS, bounded` and `PASS, functional` cover only the stated scope; neither
 establishes E5 quality. `CONTROL PASS` does not pass the
 enclosing quality gate. `RUNNING` and `QUEUED` are dated activity snapshots,
 not acceptance results. The supporting receipts and campaign details follow.
+
+The E7 actual-2K/storage comparison completed at 23:40 CET in
+`/var/tmp/strata-deepseek-e7-2k-storage-20261110/`. Coarse local copies consume
+78.46 GB on Astor and 138.24 GB on Lucy, including 78.46 GB of duplicated
+backbone between their SSDs. Engram remains on NFS. CPU-row profiling measured
+substantial blocking/descheduling and reduced waits with local backing, without
+attributing every off-CPU interval to NFS. No new numerical investigation,
+transport or local memory manager was introduced. Evidence is preserved at
+`/mnt/storage/strata-evidence/deepseek-e7-2k-storage-20261110/`.
+The report above is current; earlier activity snapshots below are historical.
 
 Current evidence includes the completed mixed-host and fixed-budget
 `summary.json` files. The tiered result is recorded in
@@ -56,12 +106,14 @@ Its `summary.json`, raw prefix exit 1, intentionally stopped suffix exit 241
 and driver exit 0 record clean abort in 3.849 seconds, below the frozen 60-second
 bound. Three acknowledged windows through position 46 were retained; the failed
 request was not replayed. All 16 sealed input hashes still match on both hosts.
-The CPU8/2K controller started its native reference after that acceptance and
-remains live, without a completed receipt.
+The CPU8/2K controller started its native reference after that acceptance. At
+08:58 CET it was deliberately interrupted to prioritize actual interactive
+inference. Its exit 1 and partial short/2K captures are preserved; this is not
+a completed 2K control or a numerical-quality failure.
 
 The [fresh E5 fixture](DEEPSEEK_QUALITY.md#fresh-quality-campaign) is pinned in
-`/var/tmp/strata-deepseek-e5-quality-20261110-r2/`; its live controller is waiting
-for the upstream native controls rather than collecting fresh outputs.
+`/var/tmp/strata-deepseek-e5-quality-20261110-r2/`; its controller withheld model
+execution and exited 1 after the deliberate upstream interruption.
 The original mixed-loss, CPU8, fresh-quality and HTTP roots retain their exit-1
 records. The startup observer race is reproduced in the corrected mixed-loss
 root's `observer-control.json`; valid native identity was never the failure.
@@ -83,8 +135,38 @@ CPU/admission controls. Its opt-in HTTP adapter has passed synthetic-process
 HTTP/SSE and lifecycle tests. Actual model execution through that new entry
 point remains unqualified; these checks do not advance E3/E4/E5. The
 [native endpoint fixture](DEEPSEEK_LAYER_PROCESS.md#native-endpoint-qualification)
-is sealed on both hosts in its `-r2` continuation and queued behind successful E5;
-it has not started a model.
+is sealed on both hosts in its `-r2` continuation. That gated controller withheld
+execution and exited 1 after the upstream interruption; it did not start a model.
+
+The user-requested interactive inference milestone completed at 09:19 CET in
+`/var/tmp/strata-deepseek-live-fast-20261110/`. The HTTP endpoint on
+`http://127.0.0.1:18099/v1` answered three fresh requests: France's capital,
+17 times 23, and an MoE explanation. Actual replies include “The capital of
+France is Paris.” and “391”. Astor executed prefix layers `[0,20)` and Lucy
+suffix layers `[20,40)`. Native logs record 299 and 246 remote expert assignments,
+respectively, with zero fallbacks. Requests, raw responses and `summary.json`
+are retained in that root. The demo was stopped only when the user resumed E5, freeing both GPUs for the
+quality comparison.
+
+This demonstration explicitly trusts the previously verified artifact identities
+through `STRATA_TRUST_VERIFIED_MODEL_SHA256`, avoiding repeated startup scans.
+Both CUDA and HIP binaries were rebuilt for that opt-in path; model arithmetic,
+layer placement and expert staging were unchanged. This is functional evidence,
+with no new quality or paired-performance qualification. The initial hash-heavy
+attempt at `/var/tmp/strata-deepseek-live-20261110/` was stopped before inference.
+Unfinished safeguard changes are preserved in
+`/var/tmp/strata-fabric-safeguards-parked-20261110/`, outside the live bundle.
+No SSH keys or machine configuration were changed.
+
+Current work follows the user's vertical sequence: **E5, then E7**. The direct
+quality run is `/var/tmp/strata-deepseek-e5-vertical-20261110/continue.py`.
+It completes each held-out case through the existing native capture/scoring path
+before proceeding to the next case. The eight tasks run with the first case.
+Previously verified model identities avoid repeated startup scans. The long-case
+scheduling allowance is two hours; numerical thresholds and corpus bytes are
+unchanged. The first launch hit a missing output-parent directory; that directory
+was created and the same reference restarted before any quality result was
+collected. No installer, quarantine or broader hardening work is in this run.
 
 Maintain this table in place. Advance a gate only after checking its completed
 receipt, raw exit and declared acceptance criteria. Record partial passes and

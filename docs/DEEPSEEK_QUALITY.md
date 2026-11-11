@@ -5,6 +5,13 @@ requires a repeatable native reference, same-prefix numerical comparisons and
 eight frozen exact-answer tasks. A successful worker call or capture is not this
 quality gate. These source-checkout analysis tools do not change inference.
 
+The [10 November experimental milestone decision](DEEPSEEK_EXPERIMENTAL_CHECKPOINT.md)
+authorizes bounded numerical deviation if the remaining frozen corpus confirms
+comparable behavior and retains baseline task passes. It does not change any
+threshold in these tools or authorize a strict E5 pass label. Numerical refinement
+is deferred; complete and preserve the current corpus, then advance to capacity
+and performance after experimental acceptance.
+
 The corpus input file records the prompt hashes, target counts, exact expected
 answers, normalization, tokenizer assets and preparation sources. It also pins
 the approved numerical thresholds. `tools/ds4_quality_inputs.py` validates that
