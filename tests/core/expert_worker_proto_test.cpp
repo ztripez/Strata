@@ -442,14 +442,18 @@ void cpu_miss_adapter_tests() {
         check(adapter.net_worker->install_plan(plan,error),error.c_str());
         std::vector<float> rows(T*stride,777.0f);
         for(int t=0;t<T;++t) for(uint32_t c=0;c<N;++c) rows[t*stride+c]=t+c*.001f;
-        std::vector<float> sums{42};std::vector<uint8_t> mask{1};auto only_local=locals;
-        check(!adapter.offload_cpu_picks({},T,rows.data(),stride,weights.data(),only_local,sums,mask) &&
-              only_local==locals && sums.empty() && mask.empty() && adapter.net_worker->stats().layers_dispatched==0,
+        CpuMissAdapterHarness::NetworkCpuParts parts;auto only_local=locals;
+        check(!adapter.offload_cpu_picks({},T,rows.data(),stride,weights.data(),only_local,parts) &&
+              only_local==locals && parts.assignments.empty() && parts.values.empty() && adapter.net_worker->stats().layers_dispatched==0,
               "CPU-only picks emitted a remote request or changed local work");
         auto delegated=picks;
-        check(adapter.offload_cpu_picks({},T,rows.data(),stride,weights.data(),delegated,sums,mask),"native adapter did not delegate held CPU misses");
-        check(delegated==locals && mask==std::vector<uint8_t>({1,0,1}) && sums.size()==T*N,
+        check(adapter.offload_cpu_picks({},T,rows.data(),stride,weights.data(),delegated,parts),"native adapter did not delegate held CPU misses");
+        check(delegated==locals && parts.assignments.size()==2 && parts.values.size()==2*N &&
+              parts.assignments[0].expert_id==3 && parts.assignments[0].token_idx==2 &&
+              parts.assignments[1].expert_id==7 && parts.assignments[1].token_idx==0,
               "native adapter removed wrong local picks or changed remote coverage");
+        std::vector<float> sums(T*N,42.0f);
+        adapter.combine_network_cpu_parts(parts,{},T,sums.data(),N);
         for(uint32_t c=0;c<N;++c) {
             check(std::fabs(sums[c]-.25f*oracle(rows[c],0,7,c))<1e-6f,"remote first-row slot weight/activation changed");
             check(sums[N+c]==0,"unassigned remote row acquired a contribution");
@@ -458,7 +462,7 @@ void cpu_miss_adapter_tests() {
         check(adapter.net_worker->stats().assignments_executed==2 && adapter.net_worker->stats().fallbacks==0,
               "native adapter executed missing/double remote assignments");
         delegated=picks;
-        check(!adapter.offload_cpu_picks({0,true},T,rows.data(),stride,weights.data(),delegated,sums,mask) && delegated==picks && sums.empty() && mask.empty(),
+        check(!adapter.offload_cpu_picks({0,true},T,rows.data(),stride,weights.data(),delegated,parts) && delegated==picks && parts.assignments.empty() && parts.values.empty(),
               "native adapter delegated an unsupported drafter layer");
     }
     for(Fault fault:{Fault::disconnect,Fault::nan,Fault::short_payload}) {
@@ -466,12 +470,12 @@ void cpu_miss_adapter_tests() {
         check(adapter.net_worker->connect_and_handshake(server.endpoint(),L,L,E,N,FF,K,identity,1000,error,
               ExpertWorkerArithmetic::DEEPSEEK_IQ_Q8K),error.c_str());
         check(adapter.net_worker->install_plan(plan,error),error.c_str());
-        const std::vector<float> rows(T*N,.25f);auto retained=picks;std::vector<float> sums{42};std::vector<uint8_t> mask{1};
-        check(!adapter.offload_cpu_picks({},T,rows.data(),N,weights.data(),retained,sums,mask) && retained==picks && sums.empty() && mask.empty(),
+        const std::vector<float> rows(T*N,.25f);auto retained=picks;CpuMissAdapterHarness::NetworkCpuParts parts;
+        check(!adapter.offload_cpu_picks({},T,rows.data(),N,weights.data(),retained,parts) && retained==picks && parts.assignments.empty() && parts.values.empty(),
               "failed expert delivery lost local fallback picks or exposed partial sums");
         check(adapter.net_warned && !adapter.net_worker->healthy() && adapter.net_worker->stats().fallbacks==1,
               "failed expert delivery remained healthy or hid its fallback");
-        check(!adapter.offload_cpu_picks({},T,rows.data(),N,weights.data(),retained,sums,mask) && retained==picks && adapter.net_worker->stats().fallbacks==1,
+        check(!adapter.offload_cpu_picks({},T,rows.data(),N,weights.data(),retained,parts) && retained==picks && adapter.net_worker->stats().fallbacks==1,
               "disabled expert channel was automatically retried");
     }
 }
