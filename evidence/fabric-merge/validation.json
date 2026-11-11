@@ -1,0 +1,49 @@
+{
+  "tested_source_head": "2edd84bbaf08acfd132b9ed5a0032c7c37e18440",
+  "recorded_at": "2026-11-11T18:07:39.170580+01:00",
+  "scope": "Post-merge builds and targeted synthetic/control tests. Historical hardware inference receipts remain separate; no model campaign rerun.",
+  "branches_included": [
+    "feat/distributed-experts",
+    "feat/kimi-k2-vertical"
+  ],
+  "passed": {
+    "cuda_targets": [
+      "strata-deepseek-layer",
+      "strata-expert-worker",
+      "strata-kimi2-split",
+      "strata-kimi2-expert-worker"
+    ],
+    "hip_gfx1030_targets": [
+      "strata-deepseek-layer",
+      "strata-expert-worker",
+      "strata-kimi2-split",
+      "strata-kimi2-expert-worker"
+    ],
+    "ctest": [
+      "expert_worker_proto_test",
+      "deepseek_layer_session_test",
+      "deepseek_layer_rpc_test"
+    ],
+    "python_unittest": {
+      "modules": [
+        "tools.test_network_fabric_host",
+        "tools.test_network_fabric_install"
+      ],
+      "tests": 31
+    },
+    "documentation": "Relative file links and compact JSON receipts checked; git diff --check clean."
+  },
+  "resolved_integration_failure": "CPU expert adapter test still used the old sums/mask signature. Updated it to the ordered per-expert contribution interface and reran the focused tests successfully.",
+  "not_run": [
+    "Full-model inference on merged main",
+    "SYCL or Metal fabric builds/runtime",
+    "Upstream default-path full regression suite",
+    "Performance or expanded quality qualification"
+  ],
+  "logs": [
+    "/var/tmp/strata-main-cuda-merge-build.log",
+    "/var/tmp/strata-main-cuda-kimi-build.log",
+    "astor:/var/tmp/strata-main-hip-merge-build.log",
+    "astor:/var/tmp/strata-main-hip-kimi-build.log"
+  ]
+}

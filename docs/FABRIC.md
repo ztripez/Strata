@@ -108,3 +108,12 @@ history; use this page for the public overview and per-model evidence for detail
 [The Reddit draft](REDDIT_FABRIC_DRAFT.md) describes the completed demonstrations
 and their limits. Posting is a separate user action. Credit the upstream Strata
 project; this fork adds experimental distributed execution and Kimi bring-up.
+
+## Merged-source verification
+
+[The integration receipt](../evidence/fabric-merge/validation.json) records CUDA
+and HIP/gfx1030 builds of the DeepSeek layer process, generic expert worker,
+Kimi split process and Kimi expert worker. Three focused C++ protocol tests and
+31 synthetic host/installation tests passed. These are merged-source build and
+control checks, not new full-model executions. The hardware demonstrations above
+were recorded before integration; no claim of a post-merge inference rerun is made.
