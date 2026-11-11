@@ -40,3 +40,17 @@ def write_text(path: PathLike, text: str, *, encoding: str = "utf-8") -> None:
     tmp = target.with_suffix(target.suffix + ".tmp") if target.suffix else target.with_name(target.name + ".tmp")
     tmp.write_text(text, encoding=encoding)
     replace(tmp, target)
+
+
+def write_new_text(path: PathLike, text: str, *, encoding: str = "utf-8") -> None:
+    """Publish a complete new record without replacing any prior evidence.
+
+    The neighbouring temporary file is exclusive too. Failed publication keeps
+    it for diagnosis; readers never see a partially written destination.
+    """
+    target = Path(path)
+    tmp = target.with_name(target.name + ".tmp")
+    with tmp.open("x", encoding=encoding) as stream:
+        stream.write(text)
+    os.link(tmp, target)
+    tmp.unlink()

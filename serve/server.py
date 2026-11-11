@@ -1177,7 +1177,9 @@ class StrataEngine:
             if line.startswith("INFO "):
                 for kv in line.split()[1:]:
                     k, _, v = kv.partition("=")
-                    self.info[k] = int(v) if v.lstrip("-").isdigit() else v
+                    # Digest metadata is opaque, including a digest made only
+                    # of digits with leading zeroes. Numeric counters stay numeric.
+                    self.info[k] = int(v) if not k.endswith("_sha256") and v.lstrip("-").isdigit() else v
             if line.startswith("READY"):
                 f = line.split()
                 self.max_context = int(f[1])

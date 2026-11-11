@@ -3,7 +3,8 @@
 // src/ds4/ds4_iq.cuh - a GGUF's routed experts in ggml's low-bit block types on the device for maya-ds4: the i-quants
 // IQ2_XXS, IQ2_S, IQ3_XXS, IQ3_S, IQ4_XS and the K-quants Q2_K, Q3_K, Q4_K (256 values a block, ggml's layouts:
 // ggml-common.h, llama.cpp MIT).  ds4_gguf.cu sends an expert layer here when its experts are not MXFP4
-// (x3::ExpertLayout::fmt kFmtMXFP4 with K[r] = role r's ggml type; K[r] == kTypeMXFP4: ds4_gguf.cu's own kernels).
+// (x3::ExpertLayout::fmt kFmtMXFP4 with K[r] = role r's ggml type). Uniform MXFP4 uses ds4_gguf.cu's own kernels;
+// mixed MXFP4 and low-bit roles use this dispatch on CUDA and HIP.
 //
 // Every weight is decoded exactly (ggml's dequantize_row_*: a block scale times an integer scale times a grid or code
 // value) and every product takes the activations rounded to int8 per 32 values with an F32 scale (ds4_gguf.cu's
@@ -37,7 +38,7 @@ bool supported(int type);
 /// Whether the type's block layout is known (its row bytes can be computed).  It covered more than supported() while
 /// IQ1_S, IQ1_M and IQ4_NL had no device kernel; they have one now, so both take the same types.
 bool known(int type);
-/// Values a block of the type holds (256; the trellis types 128; 0: not one of these).
+/// Values per block: 32 for MXFP4/IQ4_NL, 128 for trellis, 256 for the other types; 0 when unknown.
 int block_values(int type);
 /// Bytes of a block of the type (0: not one of these).
 int block_bytes(int type);

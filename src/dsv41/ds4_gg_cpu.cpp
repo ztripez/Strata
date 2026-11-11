@@ -38,7 +38,7 @@ bool gg_cpu_type(int type) {
     // placed in VRAM, but a pack may hand any of them to this lane
     switch (type) {
         case 10: case 11: case 12: case 13: case 14: case 16: case 17: case 18: case 19: case 20: case 21: case 22:
-        case 23: case 29: return true;
+        case 23: case 29: case 39: return true;   // mixed IQ gate/up with MXFP4 down uses ggml's existing row dot
         default: return false;
     }
 }

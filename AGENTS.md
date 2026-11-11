@@ -65,6 +65,38 @@ documented in [docs/SOURCE_INSTALL.md](docs/SOURCE_INSTALL.md). Those wrappers e
 released app. Do not tell an app user to find a `.bat` file.
 Source setup does not make an unsupported model or backend compatible. Strata's MCP server ([docs/MCP_SERVER.md](docs/MCP_SERVER.md)) offers the same steps as tools.
 
+## Shared hardware use across worktrees
+
+Before any model run, GPU/operator probe, or heavy CPU/RAM/storage model test on
+Lucy or Astor, use the canonical [hardware lock](docs/HARDWARE_LOCK.md). Invoke
+`/mnt/code/projects/Strata/tools/hardware_lock.py` even from another worktree.
+Reserve `lucy.gpu0` and/or `astor.gpu0` before starting processes or changing GPU
+services, and hold the reservation through remote cleanup and service restoration.
+A busy lock means wait or coordinate with its recorded owning thread. Never
+steal an active reservation. Source work and ordinary builds may continue.
+
+Check current ownership before scheduling a hardware run:
+
+```sh
+uv run --no-project --with pydantic python /mnt/code/projects/Strata/tools/hardware_lock.py status
+```
+
+Wrap the complete job, reserving only the hosts it uses:
+
+```sh
+uv run --no-project --with pydantic python /mnt/code/projects/Strata/tools/hardware_lock.py run \
+  --resource lucy.gpu0 --resource astor.gpu0 \
+  --owner YOUR_JOB_NAME --thread YOUR_THREAD_ID -- bash /absolute/path/run-job.sh
+```
+
+Use these same host keys for heavy CPU/RAM/storage model tests. A busy lock exits
+75 without starting the command; continue source work or coordinate with the
+owner. Do not launch a detached job inside `run`: the wrapped command must remain
+alive through execution, remote cleanup and service restoration. Use the shared
+lock directory and canonical CLI across all worktrees; do not create another lock
+mechanism. See [hardware lock usage](docs/HARDWARE_LOCK.md) for existing-service
+ownership and explicit recovery of a reservation left by a crashed holder.
+
 ## Working on the code
 
 - How the engine works, every measured number, the API and all settings: [docs/DETAILS.md](docs/DETAILS.md) and

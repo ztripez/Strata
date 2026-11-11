@@ -17,6 +17,12 @@
 #include <thread>
 #include <vector>
 
+#if defined(__linux__)
+#include <cstdio>
+#include <cstdlib>
+#include <sys/resource.h>
+#endif
+
 #include "ds4_os.hpp"
 #if defined(_MSC_VER)
 #include <intrin.h>
@@ -47,6 +53,15 @@ public:
         }
         cv_.notify_all();
         for (auto& t : th_) t.join();
+#if defined(__linux__)
+        if (profile_)
+            std::fprintf(stderr, "DS4_CPU_WORKER_PROFILE jobs=%llu worker_elapsed_us=%lld user_us=%lld system_us=%lld off_cpu_us=%lld minor_faults=%lld major_faults=%lld voluntary_switches=%lld involuntary_switches=%lld\n",
+                (unsigned long long) prof_jobs_.load(), (long long) prof_wall_.load(),
+                (long long) prof_user_.load(), (long long) prof_system_.load(),
+                (long long) (prof_wall_.load()-prof_user_.load()-prof_system_.load()),
+                (long long) prof_minor_.load(), (long long) prof_major_.load(),
+                (long long) prof_voluntary_.load(), (long long) prof_involuntary_.load());
+#endif
     }
     int size() const { return (int) th_.size() + 1; }
 
@@ -86,15 +101,45 @@ public:
 
 private:
     void work(uint64_t g) {
+#if defined(__linux__)
+        rusage before{};
+        std::chrono::steady_clock::time_point started;
+        uint64_t jobs = 0;
+#endif
         for (;;) {
             uint64_t t = ticket_.load(std::memory_order_acquire);
-            if ((t >> 32) != g) return;
+            if ((t >> 32) != g) break;
             const int n = total_.load(std::memory_order_acquire);
-            if ((int) (t & 0xffffffffu) >= n) return;
+            if ((int) (t & 0xffffffffu) >= n) break;
             if (!ticket_.compare_exchange_weak(t, t + 1, std::memory_order_acq_rel)) continue;
+#if defined(__linux__)
+            if (profile_ && jobs++ == 0) {
+                started = std::chrono::steady_clock::now();
+                if (getrusage(RUSAGE_THREAD, &before) != 0) {
+                    std::perror("ds4 CPU profile getrusage"); std::abort();
+                }
+            }
+#endif
             (*fn_)((int) (t & 0xffffffffu));
             done_.fetch_add(1, std::memory_order_acq_rel);
         }
+#if defined(__linux__)
+        if (profile_ && jobs) {
+            rusage after{};
+            if (getrusage(RUSAGE_THREAD, &after) != 0) {
+                std::perror("ds4 CPU profile getrusage"); std::abort();
+            }
+            const auto us = [](const timeval& v) { return int64_t{v.tv_sec}*1000000+v.tv_usec; };
+            prof_jobs_.fetch_add(jobs, std::memory_order_relaxed);
+            prof_wall_.fetch_add(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-started).count(), std::memory_order_relaxed);
+            prof_user_.fetch_add(us(after.ru_utime)-us(before.ru_utime), std::memory_order_relaxed);
+            prof_system_.fetch_add(us(after.ru_stime)-us(before.ru_stime), std::memory_order_relaxed);
+            prof_minor_.fetch_add(after.ru_minflt-before.ru_minflt, std::memory_order_relaxed);
+            prof_major_.fetch_add(after.ru_majflt-before.ru_majflt, std::memory_order_relaxed);
+            prof_voluntary_.fetch_add(after.ru_nvcsw-before.ru_nvcsw, std::memory_order_relaxed);
+            prof_involuntary_.fetch_add(after.ru_nivcsw-before.ru_nivcsw, std::memory_order_relaxed);
+        }
+#endif
     }
     void loop() {
         uint64_t seen = 0;   // (gen_ at construction: a batch start()ed before this thread first ran is still new)
@@ -128,6 +173,14 @@ private:
     alignas(64) std::atomic<int> done_{0};
     std::atomic<int> sleeping_{0};
     std::atomic<bool> quit_{false};
+#if defined(__linux__)
+    // Opt-in job spans only: excludes idle sleeping and the caller's wait() spin.
+    // Off-CPU includes I/O stalls and descheduling; concurrent spans are not request wall time.
+    const bool profile_ = std::getenv("STRATA_DS4_CPU_PROFILE") != nullptr;
+    std::atomic<uint64_t> prof_jobs_{0};
+    std::atomic<int64_t> prof_wall_{0}, prof_user_{0}, prof_system_{0};
+    std::atomic<int64_t> prof_minor_{0}, prof_major_{0}, prof_voluntary_{0}, prof_involuntary_{0};
+#endif
     std::mutex mu_;
     std::condition_variable cv_;
 };

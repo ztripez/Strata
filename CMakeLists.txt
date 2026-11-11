@@ -11,8 +11,12 @@ cmake_minimum_required(VERSION 3.24)
 project(strata VERSION 0.1.56 LANGUAGES CXX)
 # EXPERIMENTAL: the Intel Arc engine, the SYCL port in sycl/ (PR #423; icpx + oneMKL, docs/INTEL_ARC.md). It is its
 # own project that takes the unported sources from src/; with this on, nothing below is configured.
+option(STRATA_NETWORK_EXPERTS "Experimental Linux TCP expert and layer adapters" OFF)
 option(STRATA_ENABLE_SYCL "EXPERIMENTAL: build the Intel Arc (SYCL) engine from sycl/ - docs/INTEL_ARC.md" OFF)
 if(STRATA_ENABLE_SYCL)
+  if(STRATA_NETWORK_EXPERTS)
+    message(FATAL_ERROR "STRATA_NETWORK_EXPERTS does not support SYCL")
+  endif()
   if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     message(FATAL_ERROR "STRATA_ENABLE_SYCL is a separate backend; leave STRATA_ENABLE_CUDA and STRATA_ENABLE_HIP off")
   endif()
@@ -364,6 +368,13 @@ if(STRATA_BUILD_TESTS)
   add_executable(gguf_geometry_test tests/core/gguf_geometry_test.cpp)
   target_link_libraries(gguf_geometry_test PRIVATE strata_artifact)
   add_test(NAME gguf_geometry_test COMMAND gguf_geometry_test)
+  # The opt-in DeepSeek expert adapter's shape/clamp contract; no GPU or model.
+  add_executable(deepseek_worker_geometry_test tests/core/deepseek_worker_geometry_test.cpp)
+  target_link_libraries(deepseek_worker_geometry_test PRIVATE strata_artifact)
+  add_test(NAME deepseek_worker_geometry_test COMMAND deepseek_worker_geometry_test)
+  add_executable(deepseek_layer_boundary_test tests/core/deepseek_layer_boundary_test.cpp)
+  target_link_libraries(deepseek_layer_boundary_test PRIVATE strata_artifact)
+  add_test(NAME deepseek_layer_boundary_test COMMAND deepseek_layer_boundary_test)
 
   # the hipBLASLt tuning header's architecture gate: RDNA4 siblings share solution IDs, RDNA3 siblings share
   # theirs, cross-family pairs and version mismatches stay rejected (synthetic tables: no model, no GPU)
@@ -414,6 +425,38 @@ if(STRATA_BUILD_TESTS)
   target_include_directories(io_priority_test PRIVATE include)
   add_test(NAME io_priority_test COMMAND io_priority_test)
   set_tests_properties(io_priority_test PROPERTIES SKIP_RETURN_CODE 77)
+endif()
+
+if(STRATA_NETWORK_EXPERTS)
+  if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    message(FATAL_ERROR "STRATA_NETWORK_EXPERTS is currently Linux-only")
+  endif()
+  find_package(Threads REQUIRED)
+  find_package(OpenSSL REQUIRED COMPONENTS Crypto)
+  add_library(strata_network STATIC src/core/expert_worker_proto.cpp src/core/network_experts.cpp src/core/expert_worker_identity.cpp
+              src/core/network_io.cpp src/core/deepseek_boundary_io.cpp src/core/deepseek_layer_session.cpp src/core/deepseek_layer_rpc.cpp)
+  target_include_directories(strata_network PUBLIC include)
+  target_link_libraries(strata_network PUBLIC Threads::Threads OpenSSL::Crypto PRIVATE strata_warnings)
+  # GPU-free protocol and executor contract tests
+  add_executable(expert_worker_proto_test tests/core/expert_worker_proto_test.cpp)
+  target_include_directories(expert_worker_proto_test PRIVATE include)
+  target_link_libraries(expert_worker_proto_test PRIVATE strata_warnings strata_network)
+  add_executable(deepseek_boundary_io_test tests/core/deepseek_boundary_io_test.cpp)
+  target_link_libraries(deepseek_boundary_io_test PRIVATE strata_warnings strata_network)
+  add_executable(deepseek_layer_session_test tests/core/deepseek_layer_session_test.cpp)
+  target_link_libraries(deepseek_layer_session_test PRIVATE strata_warnings strata_network)
+  add_executable(deepseek_layer_rpc_test tests/core/deepseek_layer_rpc_test.cpp)
+  target_link_libraries(deepseek_layer_rpc_test PRIVATE strata_warnings strata_network)
+  add_executable(deepseek_layer_process_test tests/core/deepseek_layer_process_test.cpp)
+  target_include_directories(deepseek_layer_process_test PRIVATE src/dsv41 include)
+  target_link_libraries(deepseek_layer_process_test PRIVATE strata_warnings Threads::Threads)
+  if(STRATA_BUILD_TESTS)
+    add_test(NAME expert_worker_proto_test COMMAND expert_worker_proto_test)
+    add_test(NAME deepseek_boundary_io_test COMMAND deepseek_boundary_io_test)
+    add_test(NAME deepseek_layer_session_test COMMAND deepseek_layer_session_test)
+    add_test(NAME deepseek_layer_rpc_test COMMAND deepseek_layer_rpc_test)
+    add_test(NAME deepseek_layer_process_test COMMAND deepseek_layer_process_test)
+  endif()
 endif()
 
 # ---- strata_plan ----------------------------------------------------------
@@ -907,6 +950,26 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   add_executable(strata-q36ref src/qwen35/q36ref.cu)
   target_include_directories(strata-q36ref PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${_strata_gpu_include_directories})
   target_link_libraries(strata-q36ref PRIVATE strata_kernels strata_warnings ${_strata_gpu_runtime_target})
+
+  if(STRATA_NETWORK_EXPERTS)
+    # Distributed MoE expert worker service (CUDA or HIP device 0) and numerical parity test
+    if(STRATA_ENABLE_HIP)
+      set_source_files_properties(src/program/expert_worker.cu PROPERTIES LANGUAGE HIP)
+    endif()
+    add_executable(strata-expert-worker src/program/expert_worker.cu)
+    target_include_directories(strata-expert-worker PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${_strata_gpu_include_directories})
+    target_link_libraries(strata-expert-worker PRIVATE strata_network strata_kernels strata_core strata_warnings ${_strata_gpu_runtime_target})
+    if(STRATA_NATIVE_EXPERTS)
+      target_link_libraries(strata-expert-worker PRIVATE strata_kernels_cpu)
+    else()
+      message(FATAL_ERROR "STRATA_NETWORK_EXPERTS worker requires STRATA_NATIVE_EXPERTS")
+    endif()
+    if(STRATA_NATIVE_EXPERTS)
+      add_executable(expert_worker_parity_test tests/core/expert_worker_parity_test.cpp)
+      target_include_directories(expert_worker_parity_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${_strata_gpu_include_directories})
+      target_link_libraries(expert_worker_parity_test PRIVATE strata_network strata_kernels strata_kernels_cpu strata_core strata_warnings ${_strata_gpu_runtime_target})
+    endif()
+  endif()
   # the engine path for the same family (serve protocol, prompt chunks, decode graph): src/qwen35/q36_engine.cu, a
   # library that `strata` switches to for a qwen35moe model (the family switch at the top of its main) and that
   # strata-q36 wraps on its own.  Not on gfx906 (#3172, #3271): it calls cuBLAS entry points the wave64 compat layer does
@@ -914,6 +977,13 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   # STRATA_HAVE_QWEN35, so a gfx906 build links and runs the Qwen3.8 family, and `strata --families` says so
   if(NOT STRATA_HIP_GFX906)
   add_library(strata_qwen35 STATIC src/qwen35/q36_engine.cu)
+  if(STRATA_NETWORK_EXPERTS)
+    if(NOT STRATA_NATIVE_EXPERTS)
+      message(FATAL_ERROR "STRATA_NETWORK_EXPERTS requires STRATA_NATIVE_EXPERTS")
+    endif()
+    target_compile_definitions(strata_qwen35 PRIVATE STRATA_NETWORK_EXPERTS=1)
+    target_link_libraries(strata_qwen35 PRIVATE strata_network)
+  endif()
   target_include_directories(strata_qwen35 PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(strata_qwen35 PRIVATE strata_prefill strata_kernels strata_warnings ${_strata_gpu_runtime_target})
   if(STRATA_NATIVE_EXPERTS)
@@ -960,6 +1030,32 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     # strata_prefill: the RDNA3 WMMA dense GEMM (src/prefill/wmma_gemm.cu), which gemm() prefers over hipBLAS on gfx11 (measured
     # 4.97 -> 20-40 TFLOPS on this part: the chunked prompt's dense GEMM is 11.1 s of a 4K prompt at the library's rate)
     target_link_libraries(strata-dsv41 PRIVATE strata_prefill strata_dsv41_kernels ${_strata_gpu_runtime_target} ${_strata_gpu_blas_target})
+    if(STRATA_NETWORK_EXPERTS)
+      target_link_libraries(strata-dsv41 PRIVATE strata_network)
+      target_compile_definitions(strata-dsv41 PRIVATE STRATA_NETWORK_EXPERTS=1)
+      target_compile_definitions(strata-expert-worker PRIVATE STRATA_WORKER_DSV41=1 STRATA_DSV41_TQ_CPU=1)
+      target_include_directories(strata-expert-worker PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/dsv41
+                                 ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ggml)
+      target_sources(strata-expert-worker PRIVATE src/dsv41/ds4_gguf.cu src/dsv41/ds4_iq.cu src/dsv41/ds4_tq.cu
+                     src/dsv41/ds4_iq_cpu.cpp src/dsv41/ds4_tq_cpu.cpp src/dsv41/ds4_gg_cpu.cpp)
+      target_link_libraries(strata-expert-worker PRIVATE strata_dsv41_kernels strata_prefill ${_strata_gpu_blas_target})
+      add_executable(deepseek_worker_parity_test tests/core/deepseek_worker_parity_test.cpp
+                     src/dsv41/ds4_gguf.cu src/dsv41/ds4_iq.cu src/dsv41/ds4_tq.cu
+                     src/dsv41/ds4_iq_cpu.cpp src/dsv41/ds4_tq_cpu.cpp src/dsv41/ds4_gg_cpu.cpp)
+      target_include_directories(deepseek_worker_parity_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
+                                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dsv41 ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ggml
+                                 ${_strata_gpu_include_directories})
+      target_compile_definitions(deepseek_worker_parity_test PRIVATE STRATA_DSV41_TQ_CPU=1)
+      target_link_libraries(deepseek_worker_parity_test PRIVATE strata_network strata_dsv41_kernels
+                            strata_kernels_cpu strata_prefill ${_strata_gpu_runtime_target} ${_strata_gpu_blas_target})
+      # Native CPU row-dispatch control, with synthetic weights and no GPU/model load.
+      add_executable(deepseek_worker_cpu_test EXCLUDE_FROM_ALL tests/core/deepseek_worker_cpu_test.cpp
+                     src/dsv41/ds4_iq_cpu.cpp src/dsv41/ds4_tq_cpu.cpp src/dsv41/ds4_gg_cpu.cpp)
+      target_include_directories(deepseek_worker_cpu_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/dsv41
+                                 ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ggml)
+      target_compile_definitions(deepseek_worker_cpu_test PRIVATE STRATA_DSV41_TQ_CPU=1)
+      target_link_libraries(deepseek_worker_cpu_test PRIVATE strata_kernels_cpu Threads::Threads)
+    endif()
     find_package(Threads REQUIRED)
     target_link_libraries(strata-dsv41 PRIVATE Threads::Threads)
     if(WIN32 AND STRATA_ENABLE_HIP)   # cudaMemGetInfo is the DXGI-budgeted hip_compat::mem_get_info (src/core/device.cu): on a Strix Halo the
@@ -984,6 +1080,28 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
                                  ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ggml)
       target_link_libraries(ds4_lane_bench PRIVATE strata_dsv41_kernels strata_kernels_cpu Threads::Threads)
       target_compile_definitions(ds4_lane_bench PRIVATE STRATA_DSV41_TQ_CPU=1)
+    endif()
+    if(STRATA_NETWORK_EXPERTS)
+      # Recompile the authoritative model sources for the E2 two-executor probe;
+      # inherit its complete build contract rather than maintaining another list.
+      get_target_property(_ds4_replay_sources strata-dsv41 SOURCES)
+      list(REMOVE_ITEM _ds4_replay_sources src/dsv41/ds4_main.cpp)
+      foreach(_ds4_probe IN ITEMS layer_replay_test layer_range_load_test layer_partition_test layer_tcp_test)
+        add_executable(deepseek_${_ds4_probe} EXCLUDE_FROM_ALL tests/dsv41/${_ds4_probe}.cpp ${_ds4_replay_sources})
+        target_include_directories(deepseek_${_ds4_probe} PRIVATE
+          "$<TARGET_PROPERTY:strata-dsv41,INCLUDE_DIRECTORIES>" ${CMAKE_CURRENT_SOURCE_DIR}/src/dsv41)
+        target_compile_definitions(deepseek_${_ds4_probe} PRIVATE "$<TARGET_PROPERTY:strata-dsv41,COMPILE_DEFINITIONS>")
+        target_compile_options(deepseek_${_ds4_probe} PRIVATE "$<TARGET_PROPERTY:strata-dsv41,COMPILE_OPTIONS>")
+        target_link_libraries(deepseek_${_ds4_probe} PRIVATE "$<TARGET_PROPERTY:strata-dsv41,LINK_LIBRARIES>")
+      endforeach()
+      # Explicit source-checkout layer service. It reuses the native Model and
+      # existing DS4L transport; released/default executables remain unchanged.
+      add_executable(strata-deepseek-layer EXCLUDE_FROM_ALL src/program/deepseek_layer.cpp ${_ds4_replay_sources})
+      target_include_directories(strata-deepseek-layer PRIVATE
+        "$<TARGET_PROPERTY:strata-dsv41,INCLUDE_DIRECTORIES>" ${CMAKE_CURRENT_SOURCE_DIR}/src/dsv41)
+      target_compile_definitions(strata-deepseek-layer PRIVATE "$<TARGET_PROPERTY:strata-dsv41,COMPILE_DEFINITIONS>")
+      target_compile_options(strata-deepseek-layer PRIVATE "$<TARGET_PROPERTY:strata-dsv41,COMPILE_OPTIONS>")
+      target_link_libraries(strata-deepseek-layer PRIVATE "$<TARGET_PROPERTY:strata-dsv41,LINK_LIBRARIES>")
     endif()
     # the GGUF kernels against a double-precision reference, the PCIe lane's streamed experts against the VRAM ones' bit for
     # bit (--lane), and the packed KV caches against the BF16 rows (needs a GPU, no model; built by name)
