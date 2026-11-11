@@ -1,6 +1,8 @@
 // Real TCP delivery and fault tests with synthetic state; no GPU/math claim.
 #include "strata/core/deepseek_layer_rpc.hpp"
+#include "strata/core/network_io.hpp"
 #include "deepseek_layer_test_fixture.hpp"
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <exception>
@@ -347,9 +349,71 @@ void framing() {
     check(::send(a.value,expected.data(),7,MSG_NOSIGNAL)==7,"truncated write failed");::shutdown(a.value,SHUT_WR);
     check(!R::receive(b.value,got,200,e) && !e.empty(),"truncated frame accepted");
 }
+// Build wire bytes independently of R::send so read tests do not share the
+// encoder under test. TCP writes deliberately cross header/payload boundaries.
+std::vector<uint8_t> wire_frame(const R::Frame &frame) {
+    ExpertWireWriter w;
+    w(uint32_t{0x4c345344},uint16_t{1},static_cast<uint16_t>(frame.type),
+      frame.request_id,static_cast<uint32_t>(frame.payload.size()),uint32_t{0});
+    w.bytes.insert(w.bytes.end(),frame.payload.begin(),frame.payload.end());
+    return std::move(w.bytes);
+}
+void payload_stream_framing() {
+    const std::vector<R::Frame> expected{
+        {R::Type::capabilities,1,R::capability_bytes(receipt())},
+        {R::Type::execute,2,execute_bytes(capture(2,3,16),16)},
+        {R::Type::result,3,encode_deepseek_layer_result(layout,mock_result())},
+        {R::Type::acknowledged,4,header(capture().header)},
+        {R::Type::closed,5,{}}
+    };
+    std::vector<uint8_t> stream;
+    for(const auto &frame:expected) {
+        const auto bytes=wire_frame(frame);stream.insert(stream.end(),bytes.begin(),bytes.end());
+    }
+    // One write coalesces frames; irregular writes fragment both headers and
+    // native boundary payloads. Receivers must preserve exactly one frame each.
+    for(bool fragmented:{false,true}) {
+        Peer peer([&](int fd) {
+            const auto deadline=Clock::now()+std::chrono::seconds(2);
+            const size_t chunks[]{1,2,7,31,4093};size_t offset=0,index=0;
+            while(offset<stream.size()) {
+                const size_t size=std::min(stream.size()-offset,
+                    fragmented ? chunks[index++%5]:stream.size());
+                std::string e;
+                check(network_detail::transfer(fd,stream.data()+offset,size,true,deadline,&e),e.c_str());
+                offset+=size;
+                if(fragmented) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+        });
+        std::string e;Fd fd{expert_worker_connect("127.0.0.1",peer.port,1000,&e)};
+        check(fd.value>=0,e.c_str());
+        for(const auto &frame:expected) {
+            R::Frame got;
+            check(R::receive(fd.value,got,1000,e),e.c_str());
+            check(got.type==frame.type && got.request_id==frame.request_id && got.payload==frame.payload,
+                  "TCP split/coalesced payload changed frame boundaries or bytes");
+        }
+        peer.finish();
+    }
+    const auto bytes=wire_frame(expected[1]);
+    for(size_t cut:{size_t{0},size_t{23},size_t{24},size_t{25},bytes.size()/2,bytes.size()-1}) {
+        Peer peer([&](int fd) {
+            auto prefix=bytes;std::string e;
+            check(network_detail::transfer(fd,prefix.data(),cut,true,Clock::now()+std::chrono::seconds(1),&e),e.c_str());
+            check(::shutdown(fd,SHUT_WR)==0,"could not half-close truncated TCP frame");
+        });
+        std::string e;Fd fd{expert_worker_connect("127.0.0.1",peer.port,1000,&e)};
+        check(fd.value>=0,e.c_str());R::Frame got{R::Type::closed,42,{1,2,3}};
+        check(!R::receive(fd.value,got,1000,e) && e.find("disconnected")!=std::string::npos,
+              "truncated TCP payload did not report disconnection");
+        check(got.type==R::Type::closed && got.request_id==42 && got.payload==std::vector<uint8_t>({1,2,3}),
+              "partial TCP frame published output");
+        peer.finish();
+    }
+}
 }
 int main() {
-    try {framing();happy();fresh_connections();discovery_faults();raw_delivery_faults();preparation_fence();unexplained_preparation_failure();response_faults();transaction_deadline();interruption();
+    try {framing();payload_stream_framing();happy();fresh_connections();discovery_faults();raw_delivery_faults();preparation_fence();unexplained_preparation_failure();response_faults();transaction_deadline();interruption();
         std::puts("DS4L real TCP contract/delivery/fault/deadline/interruption tests PASS; native inference remains separate");return 0;
     } catch(const std::exception &e) {std::fprintf(stderr,"%s\n",e.what());return 1;}
 }
