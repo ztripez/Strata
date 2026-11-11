@@ -4,8 +4,6 @@ This verifies/stages a declared node and owns its worker/suffix processes. It
 never opens HTTP or claims whole-plan admission, quality or a resource reservation.
 """
 
-import fcntl
-import os
 import re
 import socket
 from contextlib import ExitStack
@@ -18,6 +16,7 @@ from serve.deepseek_layer import LayerReceipt
 from serve.tokenizer_assets import Digest, Record, load_deepseek
 from strata_control import atomic
 from strata_control.fabric_bundle import Installation
+from strata_control.fabric_lease import NodeLease
 from strata_control.fabric_plan import (
     FilePin,
     NodeId,
@@ -27,59 +26,6 @@ from strata_control.fabric_plan import (
 )
 from strata_control.fabric_process import NativeProcess, ProcessIdentity
 from tools.network_fabric_inventory import observe
-
-
-class EpochRecord(Record):
-    """Durably consumed node epoch; failed starts must not silently reuse it."""
-
-    node: NodeId
-    epoch: Positive
-    plan_sha256: Digest
-
-
-class NodeLease:
-    """One active fabric owner per node, with an atomically persisted epoch."""
-
-    def __init__(self, directory: Path, node: str, epoch: int, plan: str):
-        """Lock a private node state directory and refuse stale/corrupt records."""
-        if not directory.is_absolute():
-            raise ValueError("fabric state directory must be absolute")
-        self.record = EpochRecord(node=node, epoch=epoch, plan_sha256=plan)
-        directory = directory / node
-        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-        self.lock = (directory / "owner.lock").open("a+b")
-        self.path = directory / "epoch.json"
-        try:
-            fcntl.flock(self.lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            self.check_newer()
-        except BaseException:
-            self.lock.close()
-            raise
-
-    def check_newer(self) -> None:
-        """Only an absent ledger means first installation; malformed state fails."""
-        if self.path.exists():
-            previous = EpochRecord.model_validate_json(self.path.read_bytes())
-            if previous.node != self.record.node or previous.epoch >= self.record.epoch:
-                raise ValueError(
-                    "fabric installation epoch is stale or belongs to another node"
-                )
-
-    def reserve(self) -> None:
-        """Persist the fence before any native process can start, including fsync."""
-        self.check_newer()
-        atomic.write_text(self.path, self.record.model_dump_json() + "\n")
-        with self.path.open("rb") as stream:
-            os.fsync(stream.fileno())
-        directory = os.open(self.path.parent, os.O_RDONLY | os.O_DIRECTORY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
-
-    def close(self) -> None:
-        """Release this owner's lock without resetting the persisted epoch."""
-        self.lock.close()
 
 
 class LayerBoot(Record):
@@ -162,8 +108,7 @@ class NodeHost:
         self.place = self.spec.location(node)
         self.evidence = evidence / node
         self.owned = ExitStack()
-        self.lease = NodeLease(state, node, spec.epoch, spec.document.plan_sha256)
-        self.owned.callback(self.lease.close)
+        self.lease = NodeLease(state, self.spec, node)
         self.verified = False
         self.worker = None
         self.suffix = None
@@ -171,6 +116,7 @@ class NodeHost:
         self.layer_boot = None
         self.ownership = None
         self._exit_recorded = False
+        self.closed = False
 
     def verify(self) -> None:
         """Verify all files, re-observe resources and stage fresh runtime inputs.
@@ -402,16 +348,29 @@ class NodeHost:
         )
 
     def close(self) -> None:
-        """Stop all owned children before releasing the node's installation lease."""
+        """Keep ownership unresolved until native cleanup and the census both pass."""
+        if self.closed:
+            return
+        self.closed = True
         try:
-            self.owned.close()
+            try:
+                self.owned.close()
+                if self.lease.reserved:
+                    self.lease.finish()
+            except BaseException as error:
+                if self.lease.reserved:
+                    self.lease.quarantine(f"{type(error).__name__}: {error}")
+                raise
         finally:
-            if self.verified and not self._exit_recorded:
-                atomic.write_new_text(
-                    self.place.runtime_dir / "node-exit.json",
-                    self.status().model_dump_json(indent=2) + "\n",
-                )
-                self._exit_recorded = True
+            try:
+                if self.verified and not self._exit_recorded:
+                    atomic.write_new_text(
+                        self.place.runtime_dir / "node-exit.json",
+                        self.status().model_dump_json(indent=2) + "\n",
+                    )
+                    self._exit_recorded = True
+            finally:
+                self.lease.close()
 
     def __enter__(self):
         """Make partial installations unwind every registered native resource."""

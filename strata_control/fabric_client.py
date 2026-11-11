@@ -5,7 +5,6 @@ remote channel is not a receipt that remote cleanup has completed; the remote
 node's durable lease must still fence any subsequent installation.
 """
 
-import hashlib
 import ipaddress
 import os
 import selectors
@@ -24,6 +23,7 @@ from serve.tokenizer_assets import Record
 from strata_control import atomic, procs
 from strata_control.fabric_bundle import Installation
 from strata_control.fabric_host import HostStatus
+from strata_control.fabric_lease import binding_sha256
 from strata_control.fabric_node import Command, Reply
 from strata_control.fabric_plan import NodeId, Positive
 
@@ -139,8 +139,7 @@ class AgentClient:
         self.selector = selectors.DefaultSelector()
         self.stderr = None
         self.frames = None
-        raw = spec.model_dump_json().encode()
-        digest = hashlib.sha256(raw).hexdigest()
+        digest = binding_sha256(spec)
         try:
             self.stderr = (log_dir / f"{route.node}.stderr.log").open("xb")
             self.frames = (log_dir / f"{route.node}.replies.jsonl").open("xb")

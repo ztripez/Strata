@@ -6,7 +6,6 @@ This node agent never opens the user-facing HTTP endpoint.
 """
 
 import argparse
-import hashlib
 import os
 import queue
 import signal
@@ -21,6 +20,7 @@ from serve import owner_guard
 from serve.tokenizer_assets import Record
 from strata_control.fabric_bundle import Installation
 from strata_control.fabric_host import HostStatus, NodeHost
+from strata_control.fabric_lease import binding_sha256, reconcile
 from strata_control.fabric_plan import Positive
 
 
@@ -129,6 +129,7 @@ def main() -> None:
     parser.add_argument("--node", required=True)
     parser.add_argument("--evidence-dir", type=Path, required=True)
     parser.add_argument("--state-dir", type=Path, required=True)
+    parser.add_argument("--reconcile", action="store_true")
     args = parser.parse_args()
 
     def stop(*_):
@@ -140,10 +141,12 @@ def main() -> None:
     spec = Installation.model_validate_json(raw)
     if (
         args.installation_sha256 is not None
-        and hashlib.sha256(spec.model_dump_json().encode()).hexdigest()
-        != args.installation_sha256
+        and binding_sha256(spec) != args.installation_sha256
     ):
         raise ValueError("staged fabric installation differs from coordinator binding")
+    if args.reconcile:
+        print(reconcile(args.state_dir, spec, args.node).model_dump_json(), flush=True)
+        return
     with NodeHost(spec, args.node, args.evidence_dir, args.state_dir) as node:
         control(node)
 

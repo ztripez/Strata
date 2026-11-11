@@ -312,6 +312,7 @@ class Coordinator:
             self.svc.begin_drain()
             if self.httpd is not None:
                 attempt(self.httpd.shutdown)
+                attempt(self.httpd.server_close)
             if self.svc.wait_for_drain(self.config.drain_s):
                 self.svc.cancel_owned_requests()
             attempt(self.svc.engine.close)
@@ -319,9 +320,7 @@ class Coordinator:
                 errors.append(
                     RuntimeError("HTTP requests remained after prefix shutdown")
                 )
-            if self.httpd is not None:
-                attempt(self.httpd.server_close)
-            elif getattr(self.svc, "telemetry", None) is not None:
+            if self.httpd is None and getattr(self.svc, "telemetry", None) is not None:
                 attempt(self.svc.telemetry.close)
         for client in reversed(tuple(self.clients.values())):
             attempt(client.close)

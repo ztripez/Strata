@@ -18,6 +18,7 @@ from strata_control import fabric_host as host
 from strata_control import procs
 from strata_control.components import ComponentError
 from strata_control.fabric_bundle import Installation
+from strata_control.fabric_lease import EpochRecord, NodeLease, reconcile
 from strata_control.fabric_node import Reply
 from strata_control.fabric_process import NativeProcess, ProcessExit
 from tools.network_fabric_inventory import Inventory
@@ -27,31 +28,119 @@ from tools.test_network_fabric_plan import installation, parse, pin, proposal
 class LeaseTests(unittest.TestCase):
     """Failed starts consume a fence; malformed state is never reset implicitly."""
 
+    def setUp(self):
+        patch = mock.patch(
+            "strata_control.fabric_lease.socket.gethostname", return_value="a"
+        )
+        patch.start()
+        self.addCleanup(patch.stop)
+
     def test_active_owner_stale_epoch_and_corrupt_record_refused(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            first = host.NodeLease(root, "a", 42, "a" * 64)
+
+            def candidate(epoch):
+                spec = installation(parse(proposal()[0]), root)
+                return Installation.model_validate_json(
+                    json.dumps({**spec.model_dump(mode="json"), "epoch": epoch})
+                )
+
+            first = NodeLease(root, candidate(42), "a")
             try:
                 first.reserve()
                 with self.assertRaises(BlockingIOError):
-                    host.NodeLease(root, "a", 43, "a" * 64)
+                    NodeLease(root, candidate(43), "a")
+                with self.assertRaises(BlockingIOError):
+                    reconcile(root, candidate(42), "a")
+                first.finish()
             finally:
                 first.close()
+            with self.assertRaisesRegex(RuntimeError, "lock is closed"):
+                first.finish()
             with self.assertRaises(ValueError):
-                host.NodeLease(root, "a", 42, "a" * 64)
-            second = host.NodeLease(root, "a", 43, "a" * 64)
+                NodeLease(root, candidate(42), "a")
+            second = NodeLease(root, candidate(43), "a")
             second.reserve()
+            second.finish()
             second.close()
             self.assertEqual(
-                host.EpochRecord.model_validate_json(
+                EpochRecord.model_validate_json(
                     (root / "a/epoch.json").read_bytes()
                 ).epoch,
                 43,
             )
             (root / "a/epoch.json").write_text("corrupt")
             with self.assertRaises(ValidationError):
-                host.NodeLease(root, "a", 44, "a" * 64)
+                NodeLease(root, candidate(44), "a")
             self.assertEqual((root / "a/epoch.json").read_text(), "corrupt")
+
+    def test_abandoned_epoch_is_not_freed_by_lock_release_or_a_larger_epoch(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            spec = installation(parse(proposal()[0]), root)
+            first = NodeLease(root / "state", spec, "a")
+            first.reserve()
+            first.close()
+            with self.assertRaisesRegex(ValueError, "actual node"):
+                reconcile(root / "state", spec, "b")
+            self.assertFalse((root / "state/b").exists())
+            raw = spec.model_dump(mode="json")
+            raw["epoch"] += 1
+            with self.assertRaisesRegex(RuntimeError, "unresolved"):
+                NodeLease(
+                    root / "state",
+                    Installation.model_validate_json(json.dumps(raw)),
+                    "a",
+                )
+            with self.assertRaisesRegex(RuntimeError, "writer or parent"):
+                reconcile(root / "state", spec, "a")
+            changed = spec.model_dump(mode="json")
+            changed["http_port"] += 1
+            with self.assertRaisesRegex(ValueError, "exact previous installation"):
+                reconcile(
+                    root / "state",
+                    Installation.model_validate_json(json.dumps(changed)),
+                    "a",
+                )
+
+    def test_explicit_reconciliation_requires_dead_writer_and_parent_and_keeps_epoch(
+        self,
+    ):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            spec = installation(parse(proposal()[0]), root)
+            binding = root / "installation.json"
+            binding.write_text(spec.model_dump_json())
+            writer = (
+                "import os\nfrom pathlib import Path\n"
+                "from strata_control.fabric_bundle import Installation\n"
+                "from strata_control.fabric_lease import NodeLease\n"
+                f"spec=Installation.model_validate_json(Path({str(binding)!r}).read_bytes())\n"
+                f"owner=NodeLease(Path({str(root / 'state')!r}),spec,'a')\n"
+                "owner.reserve()\nos._exit(23)\n"
+            )
+            parent = (
+                "import subprocess,sys\n"
+                f"result=subprocess.run([sys.executable,'-c',{writer!r}])\n"
+                "assert result.returncode==23\n"
+            )
+            subprocess.run(
+                [sys.executable, "-c", parent],
+                check=True,
+                capture_output=True,
+                timeout=10,
+            )
+            record = reconcile(root / "state", spec, "a")
+            self.assertEqual(record.phase, "closed")
+            self.assertEqual(record.epoch, 42)
+            with self.assertRaises(ValueError):
+                NodeLease(root / "state", spec, "a")
+            raw = spec.model_dump(mode="json")
+            raw["epoch"] = 43
+            next_owner = NodeLease(
+                root / "state", Installation.model_validate_json(json.dumps(raw)), "a"
+            )
+            next_owner.close()
 
     def test_suffix_profile_is_not_admitted_as_prefix(self):
         spec = installation(parse(proposal()[0]), Path("/synthetic"))
@@ -283,6 +372,65 @@ class HostTests(unittest.TestCase):
         finally:
             left.close()
             right.close()
+
+    def test_failed_native_cleanup_refuses_a_new_epoch_until_reconciled(self):
+        value = self.open()
+        value.verify()
+        close = NativeProcess.close
+        successor = None
+        try:
+            with mock.patch.object(
+                NativeProcess, "close", side_effect=OSError("synthetic cleanup failure")
+            ):
+                value.start_worker()
+                with self.assertRaises(OSError):
+                    value.close()
+            self.assertIsNone(value.worker.proc.poll())
+            raw = self.spec.model_dump(mode="json")
+            raw["epoch"] += 1
+            for location in raw["locations"]:
+                location["runtime_dir"] += "-next"
+            newer = Installation.model_validate_json(json.dumps(raw))
+            with self.assertRaisesRegex(RuntimeError, "unresolved"):
+                successor = host.NodeHost(
+                    newer, "b", self.evidence, self.root / "state"
+                )
+        finally:
+            if successor is not None:
+                successor.close()
+            close(value.worker)
+
+    def test_unregistered_http_prefix_prevents_clean_lease_release(self):
+        place = self.spec.location("a")
+        place.layer_binary.parent.mkdir(parents=True)
+        shutil.copy2(self.binary, place.layer_binary)
+        node = next(node for node in self.spec.document.plan.nodes if node.id == "a")
+        owner = NodeLease(self.root / "state", self.spec, "a")
+        child = None
+        try:
+            owner.reserve()
+            with mock.patch.dict(os.environ, STRATA_FIXTURE_MODE="hold"):
+                child = NativeProcess(
+                    [
+                        str(place.layer_binary),
+                        "--serve",
+                        *self.spec.layer_arguments("prefix"),
+                    ],
+                    node.layer_binary,
+                    self.root / "external-prefix.log",
+                )
+            with self.assertRaisesRegex(RuntimeError, "unresolved native process"):
+                owner.finish()
+            self.assertIsNone(child.proc.poll())
+            child.close()
+            owner.finish()
+            self.assertEqual(
+                EpochRecord.model_validate_json(owner.path.read_bytes()).phase, "closed"
+            )
+        finally:
+            if child is not None:
+                child.close()
+            owner.close()
 
     def agent(self, new_session=True):
         """Run the real control main with synthetic files/probes in a child process."""
