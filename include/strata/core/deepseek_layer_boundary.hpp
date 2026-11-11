@@ -10,7 +10,11 @@ namespace strata::core {
 /// Layer boundaries supported by the bounded DeepSeek execution adapter.
 /// Numerical acceptance is recorded separately for each placement.
 constexpr bool deepseek_layer_supported_cut(uint32_t cut) {
+#ifdef STRATA_KIMI2_LIBRARY
+    return cut == 2;
+#else
     return cut == 16 || cut == 18 || cut == 20 || cut == 24 || cut == 28;
+#endif
 }
 
 /// Portable capture record for E2 local replay. This is not an expert-v1 message
@@ -34,6 +38,10 @@ struct DeepSeekBoundaryLayout {
     uint32_t hidden = 0, streams = 0, topk_stride = 0, cand_stride = 0, vocab = 0;
     uint64_t max_context = 0;
     std::vector<DeepSeekBoundarySource> sources;
+#ifdef STRATA_KIMI2_LIBRARY
+    // K2 partial-layer qualification returns hidden rows; full suffixes return vocabulary rows.
+    uint32_t result_width = 0;
+#endif
 };
 
 /// Append-only rows produced at an audited source layer for this window. Empty

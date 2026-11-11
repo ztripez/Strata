@@ -9,7 +9,12 @@ constexpr uint16_t result_version = 1;
 constexpr size_t result_max_bytes = 16u << 20;
 size_t result_values(const DeepSeekBoundaryLayout &layout, const DeepSeekBoundaryHeader &h, uint32_t rows) {
     D::layout(layout,h);
-    const uint64_t values=static_cast<uint64_t>(rows)*layout.vocab;
+#ifdef STRATA_KIMI2_LIBRARY
+    const uint64_t width=layout.result_width?layout.result_width:layout.vocab;
+#else
+    const uint64_t width=layout.vocab;
+#endif
+    const uint64_t values=static_cast<uint64_t>(rows)*width;
     D::require(rows && rows<=h.rows && values<=(result_max_bytes-160)/4,"invalid layer result row count or byte limit");
     return static_cast<size_t>(values);
 }

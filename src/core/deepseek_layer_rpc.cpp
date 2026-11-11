@@ -8,12 +8,17 @@ namespace {
 namespace D=deepseek_boundary_detail;
 namespace R=deepseek_layer_rpc_detail;
 using Clock=std::chrono::steady_clock;
+#ifdef STRATA_KIMI2_LIBRARY
+constexpr int max_timeout_ms=3600000;
+#else
+constexpr int max_timeout_ms=600000;
+#endif
 constexpr uint32_t magic=0x4c345344; // DS4L
 constexpr uint16_t version=1;
 constexpr size_t result_limit=16u<<20;
 int remaining(Clock::time_point deadline) {
     const auto n=std::chrono::duration_cast<std::chrono::milliseconds>(deadline-Clock::now()).count();
-    return n<=0 ? 0 : static_cast<int>(std::min<int64_t>(n,600000));
+    return n<=0 ? 0 : static_cast<int>(std::min<int64_t>(n,max_timeout_ms));
 }
 size_t limit(R::Type type) {
     switch(type) {
@@ -33,12 +38,21 @@ void validate_contract(const DeepSeekLayerContract &c) {
                "layer contract is not a canonical fresh supported-cut identity");
     auto first=h;first.session=1;first.sequence=1;first.rows=1;
     D::layout(c.layout,first);
+#ifdef STRATA_KIMI2_LIBRARY
+    D::require(c.effective_experts==8 && c.arithmetic==3 && c.layout.hidden==7168 && c.layout.streams==1 &&
+               c.layout.result_width && c.layout.result_width<=c.layout.vocab,
+               "K2 layer service requires top8, verified decoded-F32 arithmetic and native hidden width");
+#else
     D::require(c.effective_experts==6 && c.arithmetic==static_cast<uint32_t>(ExpertWorkerArithmetic::DEEPSEEK_IQ_Q8K),
                "layer service requires effective six experts and qualified Q8_K arithmetic");
+#endif
 }
 template<class Archive,class Contract> void contract_fields(Archive &a,Contract &c) {
     D::fields(a,c.identity);
     a(c.layout.hidden,c.layout.streams,c.layout.topk_stride,c.layout.cand_stride,c.layout.vocab,c.layout.max_context);
+#ifdef STRATA_KIMI2_LIBRARY
+    a(c.layout.result_width);
+#endif
 }
 void write_contract(ExpertWireWriter &w,const DeepSeekLayerContract &c) {
     validate_contract(c);contract_fields(w,c);
@@ -111,11 +125,11 @@ bool receive_until(int fd,Frame &frame,Clock::time_point deadline,std::string &e
     } catch(const std::exception &e) {error=e.what();return false;}
 }
 bool send(int fd,const Frame &frame,int timeout_ms,std::string &error) {
-    if(timeout_ms<=0 || timeout_ms>600000) {error="invalid layer send deadline";return false;}
+    if(timeout_ms<=0 || timeout_ms>max_timeout_ms) {error="invalid layer send deadline";return false;}
     return send_until(fd,frame,Clock::now()+std::chrono::milliseconds(timeout_ms),error);
 }
 bool receive(int fd,Frame &frame,int timeout_ms,std::string &error) {
-    if(timeout_ms<=0 || timeout_ms>600000) {error="invalid layer receive deadline";return false;}
+    if(timeout_ms<=0 || timeout_ms>max_timeout_ms) {error="invalid layer receive deadline";return false;}
     return receive_until(fd,frame,Clock::now()+std::chrono::milliseconds(timeout_ms),error);
 }
 
@@ -127,7 +141,7 @@ DeepSeekLayerService::DeepSeekLayerService(DeepSeekLayerCapabilities c,Prepare p
     D::require(static_cast<bool>(prepare_) && static_cast<bool>(executor_),"missing native layer service adapter");
 }
 bool DeepSeekLayerService::serve(int fd,int timeout_ms,std::string &error) {
-    if(timeout_ms<=0 || timeout_ms>600000) {error="invalid layer service deadline";return false;}
+    if(timeout_ms<=0 || timeout_ms>max_timeout_ms) {error="invalid layer service deadline";return false;}
     R::Frame request;uint64_t previous=0;bool discovered=false;
     std::unique_ptr<DeepSeekLayerSession> session;
     DeepSeekBoundaryHeader identity;
@@ -221,7 +235,7 @@ bool DeepSeekLayerClient::connect(const std::string &endpoint,const DeepSeekLaye
     const std::array<uint8_t,32> &binary,int timeout_ms,std::string &error) {
     if(fd_>=0) {error="layer channel is already connected";return false;}
     try {
-        validate_contract(expected);D::require(timeout_ms>0 && timeout_ms<=600000,"invalid layer transaction deadline");
+        validate_contract(expected);D::require(timeout_ms>0 && timeout_ms<=max_timeout_ms,"invalid layer transaction deadline");
         D::require(std::any_of(binary.begin(),binary.end(),[](uint8_t b){return b!=0;}),"missing pinned worker executable identity");
         timeout_ms_=timeout_ms;next_id_=1;begun_=false;
         {std::lock_guard lock(socket_mutex_);interrupted_=false;}

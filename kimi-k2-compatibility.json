@@ -1,0 +1,174 @@
+{
+  "model": "moonshotai/Kimi-K2-Instruct",
+  "revision": "fd1984e2b7a3350dbf7305fe73a4ede25c14de50",
+  "quant": "UD-IQ3_XXS",
+  "quant_revision": "23bf90d8196ddfcb3328a6f60c99a9bdb5c1dadf",
+  "strata_commit": "509b92fc8d00e5e0e91e2983eee21a2a19e42fbc",
+  "model_manifest_sha256": "4cd738a1b49e9c4a6bc6770ac99783c9b3cac1b394d9040930ff77f2ace83e1a",
+  "config": {
+    "architectures": [
+      "DeepseekV3ForCausalLM"
+    ],
+    "attention_bias": false,
+    "attention_dropout": 0.0,
+    "auto_map": {
+      "AutoConfig": "configuration_deepseek.DeepseekV3Config",
+      "AutoModel": "modeling_deepseek.DeepseekV3Model",
+      "AutoModelForCausalLM": "modeling_deepseek.DeepseekV3ForCausalLM"
+    },
+    "aux_loss_alpha": 0.001,
+    "bos_token_id": 163584,
+    "eos_token_id": 163585,
+    "first_k_dense_replace": 1,
+    "hidden_act": "silu",
+    "hidden_size": 7168,
+    "initializer_range": 0.02,
+    "intermediate_size": 18432,
+    "kv_lora_rank": 512,
+    "max_position_embeddings": 131072,
+    "model_type": "kimi_k2",
+    "moe_intermediate_size": 2048,
+    "moe_layer_freq": 1,
+    "n_group": 1,
+    "n_routed_experts": 384,
+    "n_shared_experts": 1,
+    "norm_topk_prob": true,
+    "num_attention_heads": 64,
+    "num_experts_per_tok": 8,
+    "num_hidden_layers": 61,
+    "num_key_value_heads": 64,
+    "num_nextn_predict_layers": 0,
+    "pretraining_tp": 1,
+    "q_lora_rank": 1536,
+    "qk_nope_head_dim": 128,
+    "qk_rope_head_dim": 64,
+    "quantization_config": {
+      "activation_scheme": "dynamic",
+      "fmt": "e4m3",
+      "quant_method": "fp8",
+      "weight_block_size": [
+        128,
+        128
+      ]
+    },
+    "rms_norm_eps": 1e-06,
+    "rope_theta": 50000.0,
+    "routed_scaling_factor": 2.827,
+    "rope_scaling": {
+      "beta_fast": 1.0,
+      "beta_slow": 1.0,
+      "factor": 32.0,
+      "mscale": 1.0,
+      "mscale_all_dim": 1.0,
+      "original_max_position_embeddings": 4096,
+      "type": "yarn"
+    },
+    "scoring_func": "sigmoid",
+    "seq_aux": true,
+    "tie_word_embeddings": false,
+    "topk_group": 1,
+    "topk_method": "noaux_tc",
+    "torch_dtype": "bfloat16",
+    "transformers_version": "4.48.3",
+    "use_cache": true,
+    "v_head_dim": 128,
+    "vocab_size": 163840
+  },
+  "pack_shards": [
+    {
+      "shard": "UD-IQ3_XXS/Kimi-K2-Instruct-UD-IQ3_XXS-00001-of-00009.gguf",
+      "bytes": 49040951072,
+      "sha256": "1f94f7911921e088704ff5f1f0055e0ee9bf5465967a0bf0c670b5da92e5bcf1"
+    },
+    {
+      "shard": "UD-IQ3_XXS/Kimi-K2-Instruct-UD-IQ3_XXS-00002-of-00009.gguf",
+      "bytes": 49769091808,
+      "sha256": "b558bda4415abffba3b45b346bde806646808656a0a0d86920da1c1b73d38127"
+    },
+    {
+      "shard": "UD-IQ3_XXS/Kimi-K2-Instruct-UD-IQ3_XXS-00003-of-00009.gguf",
+      "bytes": 48711897728,
+      "sha256": "2f0fd3546428437dc801c86b3cf5ee38c4b7043874dcc9c61c1c1df97c6fcf7d"
+    },
+    {
+      "shard": "UD-IQ3_XXS/Kimi-K2-Instruct-UD-IQ3_XXS-00004-of-00009.gguf",
+      "bytes": 48679401856,
+      "sha256": "811c0f698bce8938bb6cd21c295574e9780a101975011b9b51933900a73b2007"
+    },
+    {
+      "shard": "UD-IQ3_XXS/Kimi-K2-Instruct-UD-IQ3_XXS-00005-of-00009.gguf",
+      "bytes": 48193853824,
+      "sha256": "4e0cb49e2194d58774162b4891fd44ce11551ada0293d5c57793f9ec86549ae3"
+    },
+    {
+      "shard": "UD-IQ3_XXS/Kimi-K2-Instruct-UD-IQ3_XXS-00006-of-00009.gguf",
+      "bytes": 48136486656,
+      "sha256": "e9f8e1b59b9180514551a4478816e59fea354d43f009ee697a5d2a6b3a6a72a5"
+    },
+    {
+      "shard": "UD-IQ3_XXS/Kimi-K2-Instruct-UD-IQ3_XXS-00007-of-00009.gguf",
+      "bytes": 48151768960,
+      "sha256": "53843a21e1f76f3a00486eb87c8bdd5b57e86018ae540b98398090ef89eccc02"
+    },
+    {
+      "shard": "UD-IQ3_XXS/Kimi-K2-Instruct-UD-IQ3_XXS-00008-of-00009.gguf",
+      "bytes": 47804618624,
+      "sha256": "657ba0c6c42caec190e8cf1d36b9cc6ae2a04d781537ae65602545842d7cf77d"
+    },
+    {
+      "shard": "UD-IQ3_XXS/Kimi-K2-Instruct-UD-IQ3_XXS-00009-of-00009.gguf",
+      "bytes": 28134148032,
+      "sha256": "4866640086c635dbe5f1207963fab015b36eb85b5c640ee32ce0781bf0bcf9f6"
+    }
+  ],
+  "dependency_map": {
+    "GGUF_split_mapping": "include/strata/artifact/gguf_reader.hpp; include/strata/artifact/gguf_split.hpp",
+    "CPU_quant_experts": "src/kernels/cpu/native_expert.cpp; src/dsv41/ds4_iq_cpu.cpp; src/dsv41/ds4_gg_cpu.cpp",
+    "CUDA_HIP_IQ3_S_IQ4_XS": "src/dsv41/ds4_iq.cu; src/dsv41/ds4_iq_hip_s.inc",
+    "local_staging": "include/strata/core/expert_cache.hpp; include/strata/core/expert_source.hpp; src/dsv41/ds4_store.hpp",
+    "remote_experts": "include/strata/core/network_experts.hpp; src/core/network_experts.cpp",
+    "later_whole_layer_RPC": "main checkout c9f535fe has include/strata/core/deepseek_layer_boundary.hpp and src/core/deepseek_layer_rpc.cpp; active dirty edits untouched, absent at Kimi baseline"
+  },
+  "supported_static": [
+    "IQ3_S expert gate/up and IQ4_XS expert down decoding exist in CPU/CUDA/HIP sources",
+    "Q8_0, Q4_K, IQ4_XS and F32 are the layer-0 GGUF formats",
+    "NFS shared addressability on both nodes"
+  ],
+  "missing": [
+    "Kimi K2 engine family and tensor binding",
+    "standard MLA with K2 YaRN, compressed cache and incremental position handling",
+    "K2 sigmoid noaux_tc routing with top8 and 2.827 scaling bound to existing execution",
+    "K2 tokenizer/chat-template CLI integration",
+    "K2 whole-layer RPC adapter and network identity plumbing"
+  ],
+  "format_status": "source-audited; K1 real slice checks separate; GPU builds and runtime NOT RUN",
+  "fit_estimate": {
+    "pack_bytes": 416622218560,
+    "packed_nonexpert_bytes": 7613972480,
+    "packed_expert_bytes": 409001263104,
+    "all_nonexpert_bf16_bytes": 23444417536,
+    "compressed_KV_bf16_2048_all_layers_bytes": 143917056,
+    "nas_available_bytes_at_inventory": 4706123382784,
+    "lucy_work_available_bytes_at_inventory": 98452897792,
+    "astor_work_available_bytes_at_inventory": 5857529856,
+    "assessment": "Shared backing fits reported NAS free space; full local copies do not fit work disks. Packed nonexpert tensors ~7.09 GiB across nodes, but expanding all to BF16 uses ~21.83 GiB before expert slots, scratch and allocator overhead. Keep dense quant kernels; runtime allocation and 14/9 GiB device, RSS<48 GiB limits remain unproved."
+  },
+  "storage_io": {
+    "lucy_route_to_astor": "enp4s0 192.168.60.155 -> 192.168.63.177",
+    "lucy_route_to_NFS": "enp4s0 -> 192.168.60.2",
+    "astor_route_to_lucy": "enp37s0f0 -> 192.168.60.155",
+    "link_speed_mbps": 10000,
+    "NFS": "192.168.60.2:/ mounted /mnt/storage on both hosts",
+    "throughput": "NOT MEASURED; no speed claim"
+  },
+  "limits": [
+    "K3 and DeepSeek evidence are not K2 passes",
+    "Source support is not CUDA/HIP runtime proof",
+    "No full pack downloaded or staged",
+    "No final inference or quality claim"
+  ],
+  "integration_constraints": [
+    "The Qwen ExpertSource wrapper documents a fixed H=2560/FF=640 contract; K2 H=7168/FF=2048 must bind the existing generic native expert/pool and network APIs via a K2 adapter, not reinterpret Qwen blobs.",
+    "native_rope_apply currently documents head_dim128/256 and 64 rotated channels; K2 q head has 128 nonrotary+64 rotary channels. Reuse scaling math with a K2-specific channel view rather than assuming the Qwen call contract."
+  ]
+}

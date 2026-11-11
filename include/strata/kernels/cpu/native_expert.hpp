@@ -19,7 +19,7 @@ inline constexpr size_t kNativeActBytes = 4096;
 inline constexpr size_t kNativeHBytes = 1024;
 
 /// Arithmetic fixed for one pool batch. WindowInvariant preserves the legacy singleton result at every width.
-enum class NativeArithmetic { Default, WindowInvariant };
+enum class NativeArithmetic { Default, WindowInvariant, DequantizedF32 };
 
 /// One layer's native expert geometry.
 struct NativeFmt {
@@ -50,6 +50,9 @@ constexpr size_t kNvfp4Tail = 16;
 bool native_experts_available() noexcept;
 /// Fills `f` for a layer; false (with a reason) when ggml-cpu has no dot product for a type.
 bool native_fmt(int gu_type, int d_type, int64_t n_embd, int64_t n_ff, NativeFmt& f, std::string& err);
+/// Pool-sized scratch: true permits larger activations for run_split_multi_native.
+/// The caller must size input activation buffers from f.act_bytes.
+bool native_fmt(int gu_type, int d_type, int64_t n_embd, int64_t n_ff, NativeFmt& f, std::string& err, bool pool_sized_scratch);
 
 /// x (n_embd floats) -> the gate/up activation (act_bytes), rotated first when the layer is Hadamard-folded.
 void native_quant_act(const NativeFmt& f, const float* x, void* dst);
@@ -65,6 +68,14 @@ void native_gu_rows(const NativeFmt& f, const uint8_t* blob, const void* const* 
 /// out[t][r] = down_r . hq[t] for rows r in [r0, r1).
 void native_down_rows(const NativeFmt& f, const uint8_t* blob, const void* const* hq, int nt, float* const* out,
                       int r0, int r1);
+
+/// Decoded-weight reference arithmetic with original F32 activations, F64 accumulation,
+/// and F32 outputs. Reuses ggml's to_float decoder; no expert cache or activation quantization.
+void native_gu_rows_f32(const NativeFmt& f, const uint8_t* blob, const float* const* x, int nt,
+                        float* const* ff, int r0, int r1);
+/// Down projection using decoded weights and original F32 intermediate activations.
+void native_down_rows_f32(const NativeFmt& f, const uint8_t* blob, const float* const* h, int nt,
+                          float* const* out, int r0, int r1);
 
 /// Same per-token result as the corresponding legacy nt=1 call on this build and CPU.
 /// Kernels that already satisfy this contract retain their grouped execution.

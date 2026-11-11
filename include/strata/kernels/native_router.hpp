@@ -20,6 +20,10 @@ void native_router_top10_multi(const float* logits, int32_t* ids, float* weights
 /// 256 / 8 (Qwen3.6-35B-A3B).  logits [n_tok, n_expert], ids / weights [n_tok, k].  CUDA / HIP.
 bool native_router_topk_supported(int n_expert, int k);
 void native_router_topk(const float* logits, int32_t* ids, float* weights, int n_expert, int k, int n_tok, void* stream);
+/// Kimi K2: 384 sigmoid scores, correction bias for selection only, top8 weights
+/// normalized from unbiased scores and multiplied by 2.827. Exact ties choose lower ID.
+/// logits [n_tok,384], bias [384], ids/weights [n_tok,8]; explicit nonnull CUDA/HIP stream.
+void native_router_kimi2(const float* logits, const float* bias, int32_t* ids, float* weights, int n_tok, void* stream);
 /// STRATA_ROUTE_RESIDENT: swap non-resident tail-rank experts for resident ones within `margin` logits (see the .cu).
 /// `stats` is nullptr or 4 device uint64 counters: tail entries seen, swaps, non-resident before, non-resident after.
 void native_route_resident(const float* logits, int32_t* ids, float* weights, const int32_t* res_layer, int n_tok, float margin,

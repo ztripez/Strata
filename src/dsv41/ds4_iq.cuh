@@ -139,6 +139,10 @@ struct MvJob {
 };
 bool mv(const MvJob* jobs, int n, cudaStream_t s);
 
+/// Exact F32 decoded rows for K2 reference execution (Q4_K, Q6_K, IQ3_S, IQ4_XS).
+/// Uses the existing block decoder without a BF16/F16 rounding step; no allocation.
+bool dequant_rows_f32(int type, const void* raw, size_t ld, int k, int n, float* dst, cudaStream_t s);
+
 /// n rows of k values of a matrix of the type (ld bytes a row) as BF16 (bf16) or F16 bits, dst[n][k]: the chunked prompt path's
 /// dense GEMM operand.  false: a type not covered.
 bool dequant_rows(int type, const void* raw, size_t ld, int k, int n, uint16_t* dst, bool bf16, cudaStream_t s);

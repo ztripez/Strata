@@ -999,6 +999,61 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   endif()
 
   # DeepSeek-V4.1-Flash: the third engine path (src/dsv41, from Project Maya's maya-ds4, MIT, third_party/project-maya).
+  # Opt-in Kimi K2 layer bring-up, using existing dense/normalization/SwiGLU kernels.
+  # Decoded real-weight fixture only; this does not register a serving model family.
+  if(STRATA_NATIVE_EXPERTS AND UNIX)
+  add_library(strata_kimi2 STATIC EXCLUDE_FROM_ALL src/kimi2/layer0.cu src/kimi2/moe.cu src/kimi2/model.cpp
+    src/dsv41/ds4_kernels.cu src/dsv41/ds4_iq.cu src/dsv41/ds4_tq.cu)
+  target_compile_definitions(strata_kimi2 PRIVATE STRATA_KIMI2_LIBRARY=1)
+  target_include_directories(strata_kimi2 PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/dsv41 ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ggml ${_strata_gpu_include_directories})
+  target_link_libraries(strata_kimi2 PRIVATE strata_engine strata_kernels strata_kernels_cpu ${_strata_gpu_runtime_target} Threads::Threads)
+  if(STRATA_NETWORK_EXPERTS)
+  add_library(strata_kimi2_layer_fabric STATIC EXCLUDE_FROM_ALL src/core/deepseek_layer_rpc.cpp src/core/deepseek_layer_session.cpp src/core/network_io.cpp)
+  target_compile_definitions(strata_kimi2_layer_fabric PUBLIC STRATA_KIMI2_LIBRARY=1)
+  target_include_directories(strata_kimi2_layer_fabric PUBLIC include)
+  target_link_libraries(strata_kimi2_layer_fabric PUBLIC strata_network)
+  add_executable(strata-kimi2-split EXCLUDE_FROM_ALL src/kimi2/split.cpp)
+  target_link_libraries(strata-kimi2-split PRIVATE strata_kimi2 strata_kimi2_layer_fabric)
+  target_compile_definitions(strata_kimi2 PRIVATE STRATA_NETWORK_EXPERTS=1)
+  target_link_libraries(strata_kimi2 PRIVATE strata_network)
+  add_executable(strata-kimi2-expert-probe EXCLUDE_FROM_ALL src/kimi2/expert_probe.cpp)
+  target_link_libraries(strata-kimi2-expert-probe PRIVATE strata_network)
+  add_executable(strata-kimi2-expert-worker EXCLUDE_FROM_ALL src/program/expert_worker.cu)
+  target_compile_definitions(strata-kimi2-expert-worker PRIVATE STRATA_KIMI2_LIBRARY=1)
+  target_include_directories(strata-kimi2-expert-worker PRIVATE ${_strata_gpu_include_directories})
+  target_link_libraries(strata-kimi2-expert-worker PRIVATE strata_kimi2 strata_network strata_core ${_strata_gpu_runtime_target})
+  endif()
+  add_executable(strata-kimi2-sequence EXCLUDE_FROM_ALL src/kimi2/sequence.cpp)
+  target_link_libraries(strata-kimi2-sequence PRIVATE strata_kimi2)
+  if(STRATA_NETWORK_EXPERTS)
+    target_compile_definitions(strata-kimi2-sequence PRIVATE STRATA_NETWORK_EXPERTS=1)
+    target_link_libraries(strata-kimi2-sequence PRIVATE strata_network)
+  endif()
+  add_executable(strata-kimi2-chain EXCLUDE_FROM_ALL src/kimi2/chain.cpp)
+  target_link_libraries(strata-kimi2-chain PRIVATE strata_kimi2)
+  add_executable(strata-kimi2-layer EXCLUDE_FROM_ALL src/kimi2/layer0.cu src/dsv41/ds4_kernels.cu
+    src/dsv41/ds4_iq.cu src/dsv41/ds4_tq.cu src/kernels/cuda/quantize_act.cu)
+  target_include_directories(strata-kimi2-layer PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/dsv41 ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ggml ${_strata_gpu_include_directories})
+  target_link_libraries(strata-kimi2-layer PRIVATE strata_kimi2 ${_strata_gpu_runtime_target})
+  add_executable(strata-kimi2-router EXCLUDE_FROM_ALL src/kimi2/router.cu src/dsv41/ds4_kernels.cu
+    src/kernels/cuda/native_router.cu)
+  target_include_directories(strata-kimi2-router PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/dsv41 ${_strata_gpu_include_directories})
+  target_link_libraries(strata-kimi2-router PRIVATE ${_strata_gpu_runtime_target})
+  if(STRATA_NATIVE_EXPERTS AND UNIX)
+    add_executable(strata-kimi2-cpu-expert EXCLUDE_FROM_ALL src/kimi2/cpu_expert.cpp)
+    target_include_directories(strata-kimi2-cpu-expert PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_link_libraries(strata-kimi2-cpu-expert PRIVATE strata_kernels_cpu Threads::Threads)
+    add_executable(strata-kimi2-moe EXCLUDE_FROM_ALL src/kimi2/moe.cu src/dsv41/ds4_kernels.cu
+      src/dsv41/ds4_iq.cu src/dsv41/ds4_tq.cu)
+    target_include_directories(strata-kimi2-moe PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/dsv41 ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ggml ${_strata_gpu_include_directories})
+    target_link_libraries(strata-kimi2-moe PRIVATE strata_engine strata_kernels strata_kernels_cpu ${_strata_gpu_runtime_target} Threads::Threads)
+  endif()
+  endif()
+
   # Its own executable for now (strata-dsv41); a family switch in `strata` comes after first light.  OFF by default: it
   # changes no existing target (the vendored kernels live in strata::dsv41k, so no symbol is shared with strata_kernels).
   option(STRATA_BUILD_DSV41 "Build the DeepSeek-V4.1 engine path (strata-dsv41)" OFF)

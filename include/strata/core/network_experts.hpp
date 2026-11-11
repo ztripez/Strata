@@ -110,6 +110,9 @@ class NetworkExpertExecutor {
     // layer!
     bool wait_result(float *out_sums, uint8_t *out_mask, std::string *err = nullptr);
 
+    // Opt in to existing PING/PONG frames while idle. Zero keeps the default request-only I/O loop.
+    void set_keepalive_interval(int interval_ms);
+
     // Synchronous convenience wrapper (begin_async + wait_result).
     bool execute_sync(int32_t layer, uint32_t n_tokens, const float *acts,
                       const std::vector<ExpertWorkerAssignment> &assigns, float *out_sums, uint8_t *out_mask,
@@ -126,6 +129,7 @@ class NetworkExpertExecutor {
     std::string endpoint_;
     int timeout_ms_ = 5000;
     uint16_t protocol_version_ = kExpertWorkerVersion;
+    int keepalive_interval_ms_ = 0;
     uint32_t n_layers_ = 0;
     uint32_t total_layers_ = 0;
     uint32_t n_experts_ = 0;

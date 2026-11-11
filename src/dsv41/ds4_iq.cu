@@ -1318,11 +1318,11 @@ void mv_nc(const Jobs& J, int nj, int max_n, int max_c, cudaStream_t s) {
 // The 32 values go through shared memory and are written coalesced (a warp's 32 threads cover 1024 contiguous values): a
 // thread writing its own 32 values straight to dst wrote 2 bytes every 64 (a warp's store touches 32 cache lines), which
 // measured 0.5 G weights/s on the R9700 - the 8K prompt's q_b stage 4 s.  DS4_DQ_OLD=1 keeps the old kernel for A/B.
-template <int T>
+template <int T, typename Output = uint16_t>
 __global__ void __launch_bounds__(kThreads) dq_rows_kernel2(const uint8_t* __restrict__ raw, size_t ld, int k, int n,
-                                                            uint16_t* __restrict__ dst, bool bf16) {
+                                                            Output* __restrict__ dst, bool bf16) {
     __shared__ uint32_t tab[Ty<T>::TAB > 0 ? Ty<T>::TAB : 1];
-    __shared__ uint16_t sm[kThreads * 32];
+    __shared__ Output sm[kThreads * 32];
     load_tab<T>(tab);
     __syncthreads();
     const int nsb = k / 32;
@@ -1330,7 +1330,7 @@ __global__ void __launch_bounds__(kThreads) dq_rows_kernel2(const uint8_t* __res
     const size_t vals = (size_t) n * (size_t) k;
     for (size_t base = (size_t) blockIdx.x * kThreads; base < total; base += (size_t) gridDim.x * kThreads) {
         const size_t i = base + threadIdx.x;
-        uint16_t* o = sm + threadIdx.x * 32;
+        Output* o = sm + threadIdx.x * 32;
         if (i < total) {
             const size_t r = i / (size_t) nsb;
             const int kb = (int) (i - r * (size_t) nsb);
@@ -1342,7 +1342,8 @@ __global__ void __launch_bounds__(kThreads) dq_rows_kernel2(const uint8_t* __res
             for (int j = 0; j < 32; ++j) {
                 const int q = (int) (int8_t) ((uint32_t) sb.q[j >> 2] >> (8 * (j & 3)));
                 const float v = j < 16 ? __fsub_rn(__fmul_rn(d0, (float) q), sb.m0) : __fsub_rn(__fmul_rn(d1, (float) q), sb.m1);
-                o[j] = bf16 ? strata::ds4::bf16_rn(v) : __half_as_ushort(__float2half_rn(v));
+                if constexpr (sizeof(Output) == sizeof(float)) o[j] = v;
+                else o[j] = bf16 ? strata::ds4::bf16_rn(v) : __half_as_ushort(__float2half_rn(v));
             }
         } else {
 #pragma unroll
@@ -1352,7 +1353,7 @@ __global__ void __launch_bounds__(kThreads) dq_rows_kernel2(const uint8_t* __res
         // sm[m] is the block's value m (the sub-blocks are contiguous in the row-major output, rows included): write it
         // a thread's 32 values apart, so a warp's stores are 512 contiguous bytes each
         const size_t go = base * 32;
-        uint16_t* d = dst + go;
+        Output* d = dst + go;
 #pragma unroll
         for (int j = 0; j < 32; ++j) {
             const size_t m = (size_t) j * kThreads + threadIdx.x;
@@ -1467,6 +1468,28 @@ static bool dq_use_old_kernel() {
     if (dq_device_is_gfx11()) return env == 1;
     const bool v026 = strata::ds4::defaults_026();   // DS4_DEFAULTS=026: 0.2.6's row-per-lane dequantizer (the same values, bit for bit)
     return strata::ds4::dq_old_default(env, false, v026);
+}
+
+// K2's correctness path needs the exact decoded weights before F32 GEMV.
+bool dequant_rows_f32(int type, const void* raw, size_t ld, int k, int n, float* dst, cudaStream_t stream) {
+    if (raw == nullptr || dst == nullptr || k % 256 != 0 || n <= 0) return false;
+    const unsigned blocks = (unsigned) std::min<size_t>(((size_t) n * (size_t) (k / 32) + kThreads - 1) / kThreads, 65535);
+    switch (type) {
+    case kQ4_K:
+        strata_ds4_launch((dq_rows_kernel2<kQ4_K, float>), blocks, kThreads, 0, stream, (const uint8_t*) raw, ld, k, n, dst, false); break;
+    case kQ5_K:
+        strata_ds4_launch((dq_rows_kernel2<kQ5_K, float>), blocks, kThreads, 0, stream, (const uint8_t*) raw, ld, k, n, dst, false); break;
+    case kQ6_K:
+        strata_ds4_launch((dq_rows_kernel2<kQ6_K, float>), blocks, kThreads, 0, stream, (const uint8_t*) raw, ld, k, n, dst, false); break;
+    case kIQ3_XXS:
+        strata_ds4_launch((dq_rows_kernel2<kIQ3_XXS, float>), blocks, kThreads, 0, stream, (const uint8_t*) raw, ld, k, n, dst, false); break;
+    case kIQ3_S:
+        strata_ds4_launch((dq_rows_kernel2<kIQ3_S, float>), blocks, kThreads, 0, stream, (const uint8_t*) raw, ld, k, n, dst, false); break;
+    case kIQ4_XS:
+        strata_ds4_launch((dq_rows_kernel2<kIQ4_XS, float>), blocks, kThreads, 0, stream, (const uint8_t*) raw, ld, k, n, dst, false); break;
+    default: return false;
+    }
+    return true;
 }
 
 bool dequant_rows(int type, const void* raw, size_t ld, int k, int n, uint16_t* dst, bool bf16, cudaStream_t s) {

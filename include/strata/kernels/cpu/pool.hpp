@@ -63,6 +63,8 @@ struct ExpertJobMulti {
     float* out[MAXT] = {};
     /// Plan v0.3 P6: a native pack's activations (the layer's `vec_dot_type`), one per token.
     const void* nact[MAXT] = {};
+    /// Original F32 activations, used only with NativeArithmetic::DequantizedF32.
+    const float* f32act[MAXT] = {};
     /// 149-cold: this job's own layout (null: the layer's) - the GGUF read in place, where gate / up / down are three
     /// tensors: `blob` is the gate rows and the offsets reach the expert's up and down rows in the mapping.
     const NativeFmt* fmt = nullptr;
@@ -202,6 +204,8 @@ public:
     static constexpr int kMaxTasks = 4096;
     /// The watchdog's view of the pool (issue #31): the batch, the counters, every thread's state.
     void diag(std::FILE* f) const;
+    /// Set a bounded no-progress wait for file-backed jobs; existing callers retain 60 seconds.
+    void set_stall_timeout(std::chrono::seconds timeout);
     ~ExpertPool();
     ExpertPool(const ExpertPool&) = delete;
     ExpertPool& operator=(const ExpertPool&) = delete;
@@ -285,6 +289,7 @@ public:
     static constexpr std::chrono::seconds kStall{60};
 
 private:
+    std::chrono::seconds stall_timeout_ = kStall;
     int phase_tasks(int64_t rows) const;
     int tasks_ = 0;
     void worker(int id);
@@ -294,7 +299,7 @@ private:
     int claim(uint32_t epoch);
     /// Publish the batch whose description the caller has just written: reset `done`, then `head`, then the epoch.
     uint32_t begin_batch(int n);
-    /// The host's waits, bounded by `kStall`.
+    /// The host's waits, bounded by the instance's configured no-progress timeout.
     void wait_parked(const char* what);
     void wait_done(int n);
     /// Bump `epoch_`, and wake the workers that went to sleep.  Every publish goes through here.
@@ -369,6 +374,19 @@ private:
     const NativeFmt* nfmt_ = nullptr;
     NativeArithmetic narithmetic_ = NativeArithmetic::Default;
     std::vector<SplitBufMulti> split_multi_;
+    // Larger native geometry uses this pool's workspace; legacy geometry keeps its fixed buffers.
+    std::vector<float> native_ff_;
+    std::vector<uint8_t> native_hq_;
+    bool wide_native_ = false;
+    float* native_ff(int e, int t) {
+        return wide_native_ ? native_ff_.data() + ((size_t)e * MAXT + t) * (size_t)nfmt_->n_ff
+                            : split_multi_[(size_t)e].ff[t];
+    }
+    uint8_t* native_hq(int e, int t) {
+        return wide_native_ ? native_hq_.data() + ((size_t)e * MAXT + t) * nfmt_->h_bytes
+                            : split_multi_[(size_t)e].hq[t];
+    }
+
     // STRATA_NUMA_SPLIT=1 (opt-in, Linux, exactly 2 nodes): in the native row phases (modes 5/6) every expert's rows
     // are cut into one slice per NUMA node (slice k = rows [per*k/2, per*(k+1)/2) of the gate/up or down matrix, the
     // part the resident complement places on node k in step B), and each node's threads claim and count on their own

@@ -23,6 +23,7 @@
 #include <cstring>
 #include <map>
 #include <mutex>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -171,6 +172,10 @@ bool iq256_supported(int type) noexcept {
 bool kq256_supported(int type) noexcept { return type == 12 || type == 7 || type == 8; }
 
 bool native_fmt(int gu_type, int d_type, int64_t n_embd, int64_t n_ff, NativeFmt& f, std::string& err) {
+    return native_fmt(gu_type, d_type, n_embd, n_ff, f, err, false);
+}
+
+bool native_fmt(int gu_type, int d_type, int64_t n_embd, int64_t n_ff, NativeFmt& f, std::string& err, bool pool_sized_scratch) {
     init_once();
     // The trellis types (Gyro, ggml types 144-146) are not in a ggml built from upstream (and an upstream ggml indexes its
     // type table by the id, so asking it about 144 reads past the table): their geometry and activation format (Q8_0)
@@ -216,7 +221,7 @@ bool native_fmt(int gu_type, int d_type, int64_t n_embd, int64_t n_ff, NativeFmt
     }
     f.act_bytes = ggml_row_size(vdt_g, n_embd);
     f.h_bytes = ggml_row_size(vdt_d, n_ff);
-    if (f.act_bytes > kNativeActBytes || f.h_bytes > kNativeHBytes) {
+    if (!pool_sized_scratch && (f.act_bytes > kNativeActBytes || f.h_bytes > kNativeHBytes)) {
         err = "native experts: activation larger than the pool's buffers";
         return false;
     }
@@ -598,3 +603,38 @@ void native_down_rows_invariant(const NativeFmt& f, const uint8_t* blob, const v
 }
 
 }  // namespace strata::kernels::cpu
+
+namespace strata::kernels::cpu {
+namespace {
+void decoded_rows_f32(int type, const uint8_t* weights, size_t row_bytes, int k,
+                      const float* const* x, int nt, float* const* out, int r0, int r1) {
+    const auto* tr = ggml_get_type_traits((ggml_type)type);
+    if (!tr || !tr->to_float) throw std::runtime_error("no ggml F32 decoder for native expert");
+    thread_local std::vector<float> row;
+    row.resize((size_t)k);
+    for (int r = r0; r < r1; ++r) {
+        tr->to_float(weights + (size_t)r * row_bytes, row.data(), k);
+        for (int t = 0; t < nt; ++t) {
+            double sum = 0;
+            for (int i = 0; i < k; ++i) sum += (double)row[(size_t)i] * x[t][i];
+            out[t][r] = (float)sum;
+        }
+    }
+}
+}
+void native_gu_rows_f32(const NativeFmt& f, const uint8_t* blob, const float* const* x, int nt,
+                        float* const* ff, int r0, int r1) {
+    thread_local std::vector<float> up;
+    up.resize((size_t)nt * (size_t)f.n_ff);
+    float* up_rows[MAXT];
+    for (int t = 0; t < nt; ++t) up_rows[t] = up.data() + (size_t)t * (size_t)f.n_ff;
+    decoded_rows_f32(f.gu_type, blob, f.gu_row, (int)f.n_embd, x, nt, ff, r0, r1);
+    decoded_rows_f32(f.gu_type, blob + f.up_off, f.gu_row, (int)f.n_embd, x, nt, up_rows, r0, r1);
+    for (int t = 0; t < nt; ++t)
+        for (int r = r0; r < r1; ++r) ff[t][r] = ff[t][r] / (1.0f + std::exp(-ff[t][r])) * up_rows[t][r];
+}
+void native_down_rows_f32(const NativeFmt& f, const uint8_t* blob, const float* const* h, int nt,
+                          float* const* out, int r0, int r1) {
+    decoded_rows_f32(f.d_type, blob + f.down_off, f.d_row, (int)f.n_ff, h, nt, out, r0, r1);
+}
+}

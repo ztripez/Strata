@@ -1125,17 +1125,22 @@ uint32_t ExpertPool::begin_batch(int n) {
     return e;
 }
 
+void ExpertPool::set_stall_timeout(std::chrono::seconds timeout) {
+    if (timeout <= std::chrono::seconds::zero())
+        throw std::invalid_argument("expert pool stall timeout must be positive");
+    stall_timeout_ = timeout;
+}
+
 void ExpertPool::wait_parked(const char* what) {
     hstate_.store(kWaitParked, std::memory_order_relaxed);
     hstate_ms_.store(now_ms(), std::memory_order_relaxed);
     uint32_t spins = 0;
-    std::chrono::steady_clock::time_point t0{};
+    auto t0 = std::chrono::steady_clock::now();
     while (parked_count() != (uint32_t) n_) {
         strata_cpu_pause();
         if ((++spins & 1023u) != 0) continue;
         const auto now = std::chrono::steady_clock::now();
-        if (spins == 1024u) t0 = now;
-        else if (now - t0 > kStall) {
+        if (now - t0 > stall_timeout_) {
             std::fprintf(stderr, "strata: the CPU expert pool stalled %s (%u of %d workers parked)%s - stopping the engine "
                                  "so the server can start it again (issue #29)\n",
                          what, parked_count(), n_, numa_counters().c_str());
@@ -1150,7 +1155,7 @@ void ExpertPool::wait_done(int n) {
     hstate_.store(kWaitDone, std::memory_order_relaxed);
     hstate_ms_.store(now_ms(), std::memory_order_relaxed);
     uint32_t spins = 0, seen = 0;
-    std::chrono::steady_clock::time_point t0{};
+    auto t0 = std::chrono::steady_clock::now();
     for (;;) {
         uint32_t d = 0;
         if (numa_phase())   // the slices' counts, each bounded by its tasks: the sum is n only when every slice is done
@@ -1161,8 +1166,8 @@ void ExpertPool::wait_done(int n) {
         strata_cpu_pause();
         if ((++spins & 1023u) != 0) continue;
         const auto now = std::chrono::steady_clock::now();
-        if (spins == 1024u || d != seen) { t0 = now; seen = d; }     // progress restarts the clock
-        else if (now - t0 > kStall) {
+        if (d != seen) { t0 = now; seen = d; }     // only completed jobs restart the clock
+        else if (now - t0 > stall_timeout_) {
             std::fprintf(stderr, "strata: the CPU expert pool stalled: %u of %d jobs done, %u of %d workers parked%s - "
                                  "stopping the engine so the server can start it again (issue #29)\n",
                          d, n, parked_count(), n_, numa_counters().c_str());
@@ -1216,7 +1221,15 @@ void ExpertPool::drain(int id, ExpertScratch& scratch, uint32_t epoch) {
                 const int r0 = row0 + l0, r1 = row0 + l1;
                 SplitBufMulti& sb = split_multi_[(size_t) e];
                 const NativeFmt* const nfmt = mjobs_[e].fmt != nullptr ? mjobs_[e].fmt : nfmt_;   // 149-cold: same types and rows
-                if (mode_ == 5 && q2_native_kernels(nfmt->gu_type)) {
+                if (narithmetic_ == NativeArithmetic::DequantizedF32) {
+                    float* ff[MAXT];
+                    const float* h[MAXT];
+                    for (int t = 0; t < mjobs_[e].nt; ++t) { ff[t] = native_ff(e,t); h[t] = ff[t]; }
+                    if (mode_ == 5)
+                        native_gu_rows_f32(*nfmt, mjobs_[e].blob, mjobs_[e].f32act, mjobs_[e].nt, ff, r0, r1);
+                    else
+                        native_down_rows_f32(*nfmt, mjobs_[e].blob, h, mjobs_[e].nt, mjobs_[e].out, r0, r1);
+                } else if (mode_ == 5 && q2_native_kernels(nfmt->gu_type)) {
                     // a native Q2_0 pack: gate and up rows on the Q2_0 kernels, then SwiGLU
                     thread_local float gbuf[MAXT][FF], ubuf[MAXT][FF];
                     float* gp[MAXT];
@@ -1230,7 +1243,7 @@ void ExpertPool::drain(int id, ExpertScratch& scratch, uint32_t epoch) {
                             sb.ff[t][r] = (gbuf[t][r] / (1.f + std::exp(-gbuf[t][r]))) * ubuf[t][r];
                 } else if (mode_ == 5) {
                     float* ff[MAXT];
-                    for (int t = 0; t < mjobs_[e].nt; ++t) ff[t] = sb.ff[t];
+                    for (int t = 0; t < mjobs_[e].nt; ++t) ff[t] = native_ff(e, t);
                     if (narithmetic_ == NativeArithmetic::WindowInvariant)
                         native_gu_rows_invariant(*nfmt, mjobs_[e].blob, mjobs_[e].nact, mjobs_[e].nt, ff, r0, r1);
                     else
@@ -1243,7 +1256,7 @@ void ExpertPool::drain(int id, ExpertScratch& scratch, uint32_t epoch) {
                                 mjobs_[e].nt, mjobs_[e].out, r0, r1);
                 } else {
                     const void* hq[MAXT];
-                    for (int t = 0; t < mjobs_[e].nt; ++t) hq[t] = sb.hq[t];
+                    for (int t = 0; t < mjobs_[e].nt; ++t) hq[t] = native_hq(e, t);
                     if (narithmetic_ == NativeArithmetic::WindowInvariant)
                         native_down_rows_invariant(*nfmt, mjobs_[e].blob, hq, mjobs_[e].nt, mjobs_[e].out, r0, r1);
                     else
@@ -1364,6 +1377,15 @@ void ExpertPool::run_split_multi(ExpertJobMulti* jobs, int n) {
 
 void ExpertPool::run_split_multi_native(const NativeFmt& f, ExpertJobMulti* jobs, int n, NativeArithmetic arithmetic) {
     if (n <= 0) return;
+    wide_native_ = f.n_ff > FF || f.h_bytes > kNativeHBytes;
+    if (wide_native_) {
+        if (q2_native_kernels(f.gu_type) || q2_native_kernels(f.d_type))
+            throw std::invalid_argument("wide native pool geometry requires generic native row kernels");
+        const size_t slots = (size_t) (std::min)(n, kMaxSplitMulti) * MAXT;
+        native_ff_.resize(slots * (size_t)f.n_ff);
+        native_hq_.resize(slots * f.h_bytes);
+    }
+
     const auto t0 = std::chrono::steady_clock::now();
     // more distinct experts than buffers: run them in batches
     for (int b0 = 0; b0 < n; b0 += kMaxSplitMulti) {
@@ -1376,10 +1398,12 @@ void ExpertPool::run_split_multi_native(const NativeFmt& f, ExpertJobMulti* jobs
         const auto a = std::chrono::steady_clock::now();
         run_phase(5, mtasks_);
         const auto b = std::chrono::steady_clock::now();
-        for (int e = 0; e < nb; ++e)
-            for (int t = 0; t < mjobs_[e].nt; ++t)
-                if (q2_native_kernels(f.d_type)) act_quant_any(split_multi_[(size_t) e].ff[t], FF, split_multi_[(size_t) e].a2[t]);
-                else native_quant_h(f, split_multi_[(size_t) e].ff[t], split_multi_[(size_t) e].hq[t]);
+        if (arithmetic != NativeArithmetic::DequantizedF32) {
+            for (int e = 0; e < nb; ++e)
+                for (int t = 0; t < mjobs_[e].nt; ++t)
+                    if (q2_native_kernels(f.d_type)) act_quant_any(split_multi_[(size_t) e].ff[t], FF, split_multi_[(size_t) e].a2[t]);
+                    else native_quant_h(f, native_ff(e, t), native_hq(e, t));
+        }
         const auto c = std::chrono::steady_clock::now();
         mrows_ = (int64_t) nb * f.n_embd;
         mtasks_ = numa_n_ > 0 ? numa_plan_phase((int) f.n_embd, nb) : phase_tasks(mrows_);

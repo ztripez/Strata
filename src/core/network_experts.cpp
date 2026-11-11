@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstring>
 #include <set>
+#include <stdexcept>
 
 namespace strata::core {
 namespace {
@@ -42,6 +43,7 @@ void NetworkExpertExecutor::close() {
     healthy_.store(false);
     installed_ = false;
     in_flight_ = false;
+    keepalive_interval_ms_ = 0;
 }
 
 bool NetworkExpertExecutor::connect_and_handshake(const std::string &endpoint, uint32_t n_layers, uint32_t total_layers,
@@ -227,13 +229,57 @@ bool NetworkExpertExecutor::begin_async(int32_t layer, uint32_t n_tokens, const 
     return true;
 }
 
+void NetworkExpertExecutor::set_keepalive_interval(int interval_ms) {
+    if (interval_ms < 0)
+        throw std::invalid_argument("worker keepalive interval must be nonnegative");
+    std::lock_guard<std::mutex> lk(mu_);
+    keepalive_interval_ms_ = interval_ms;
+    cv_req_.notify_one();
+}
+
 void NetworkExpertExecutor::io_loop() {
     std::unique_lock<std::mutex> lk(mu_);
     while (true) {
-        cv_req_.wait(lk, [&] { return quit_ || req_pending_; });
+        if (keepalive_interval_ms_ == 0) {
+            cv_req_.wait(lk, [&] { return quit_ || req_pending_ || keepalive_interval_ms_ > 0; });
+        } else if (!cv_req_.wait_for(lk, std::chrono::milliseconds(keepalive_interval_ms_),
+                                    [&] { return quit_ || req_pending_ || keepalive_interval_ms_ == 0; }) &&
+                   installed_ && !in_flight_ && healthy()) {
+            const uint64_t rid = next_req_id_++;
+            lk.unlock();
+            ExpertWorkerFrameHeader pong{};
+            std::vector<uint8_t> payload;
+            std::string err;
+            const bool ok = expert_worker_send_frame(fd_, ExpertWorkerMsgType::PING, rid, nullptr, 0,
+                                                     &err, timeout_ms_) &&
+                            expert_worker_recv_frame(fd_, pong, payload, &err, timeout_ms_) &&
+                            pong.request_id == rid &&
+                            pong.msg_type == static_cast<uint16_t>(ExpertWorkerMsgType::PONG) && payload.empty();
+            lk.lock();
+            if (quit_)
+                break;
+            if (!ok) {
+                healthy_.store(false);
+                expert_worker_shutdown(fd_);
+                std::fprintf(stderr, "strata-network: worker keepalive failed: %s\n",
+                             err.empty() ? "unexpected worker PONG" : err.c_str());
+            } else {
+                std::fprintf(stderr, "strata-network: worker PONG request=%llu\n", (unsigned long long)rid);
+            }
+            continue;
+        }
         if (quit_)
             break;
+        if (!req_pending_)
+            continue;
         req_pending_ = false;
+        if (!healthy()) {
+            req_ok_ = false;
+            req_err_ = "expert worker connection is unhealthy";
+            req_done_ = true;
+            cv_done_.notify_all();
+            continue;
+        }
         const uint64_t rid = next_req_id_++;
         const auto deadline = dispatch_t0_ + std::chrono::milliseconds(timeout_ms_);
         lk.unlock();

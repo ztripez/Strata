@@ -1,0 +1,405 @@
+{
+  "gate": "K7",
+  "status": "FAIL",
+  "model": "moonshotai/Kimi-K2-Instruct",
+  "revision": "fd1984e2b7a3350dbf7305fe73a4ede25c14de50",
+  "quant": "UD-IQ3_XXS",
+  "quant_revision": "23bf90d8196ddfcb3328a6f60c99a9bdb5c1dadf",
+  "download": {
+    "status": "PASS",
+    "session_id": 88317,
+    "destination": "/mnt/storage/models/Kimi-K2-Instruct-UD-IQ3_XXS-23bf90d8196d",
+    "log": "/mnt/work/kimi-k2/k7/download.log",
+    "expected_bytes": 416622218560,
+    "shards": 9,
+    "workers": 2,
+    "command": "HF_HOME=/mnt/storage/models/Kimi-K2-Instruct-UD-IQ3_XXS-23bf90d8196d/.hf-home HF_HUB_DISABLE_XET=1 hf download unsloth/Kimi-K2-Instruct-GGUF --revision 23bf90d8196ddfcb3328a6f60c99a9bdb5c1dadf --include 'UD-IQ3_XXS/*.gguf' --local-dir /mnt/storage/models/Kimi-K2-Instruct-UD-IQ3_XXS-23bf90d8196d --max-workers 2 --quiet",
+    "completed_shards_observed": 9,
+    "completed_bytes_observed": 416622218560,
+    "pid_observed": 4076298,
+    "exit_code": 0,
+    "all_expected_sizes_match": true,
+    "files_read_only": true
+  },
+  "authorization": "K0-K6 receipts PASS before full-pack download began",
+  "storage_preflight": {
+    "available_nfs_tib": 3.8,
+    "device": "192.168.60.2:/"
+  },
+  "remaining": [
+    "execute actual all61-layer256-token prefill and final163840-wide logits",
+    "execute16 autoregressive positions; collect memory, ownership, expert-direction and raw-logit receipts"
+  ],
+  "blockers": [],
+  "implementation_progress": {
+    "model_mapping": "src/kimi2/model.cpp: existing GgufModel mappings; all61 layers, 384 experts per MoE table, embeddings and output head required",
+    "native_operator_source": "src/kimi2/layer0.cu and src/kimi2/moe.cu accept borrowed original packed model pointers",
+    "native_full_split": "src/kimi2/split.cpp optional --model path executes Lucy layers0-1 and Astor layers2-60, final RMSNorm/head and greedy decode",
+    "cuda_builds": {
+      "split": "/mnt/work/kimi-k2/k7/eos-build.log",
+      "worker": "/mnt/work/kimi-k2/k7/full-worker-build.log",
+      "status": "PASS"
+    },
+    "hip_builds": {
+      "split": "astor:/var/tmp/kimi2-split-full-hip-build.log",
+      "worker": "astor:/var/tmp/kimi2-worker-full-hip-build.log",
+      "status": "PASS"
+    },
+    "full_model_execution": "NOT RUN"
+  },
+  "frozen_run_profile": {
+    "plan": "/mnt/work/kimi-k2/k7/split-plan.json",
+    "prompt": "/mnt/work/kimi-k2/k7/prompt.json",
+    "prompt_tokens": 256,
+    "prefill_window": 8,
+    "maximum_decode_tokens": 16,
+    "sampling": "greedy",
+    "generation_eos": 163586,
+    "manifest_sha256": "4cd738a1b49e9c4a6bc6770ac99783c9b3cac1b394d9040930ff77f2ace83e1a"
+  },
+  "startup_shard_check_file": "/mnt/work/kimi-k2/k7/checksums.sha256",
+  "shard_verification": {
+    "scope": "all nine complete pinned shards",
+    "status": "PASS",
+    "session_id": 17054,
+    "log": "/mnt/work/kimi-k2/k7/sha256-first-two-retry.log",
+    "prior_wrapper_failure": "/mnt/work/kimi-k2/k7/sha256-first-two.log: /usr/bin/time absent; direct sha256sum run replaces wrapper",
+    "verified_shards": [
+      "UD-IQ3_XXS/Kimi-K2-Instruct-UD-IQ3_XXS-00001-of-00009.gguf",
+      "UD-IQ3_XXS/Kimi-K2-Instruct-UD-IQ3_XXS-00002-of-00009.gguf",
+      "UD-IQ3_XXS/Kimi-K2-Instruct-UD-IQ3_XXS-00003-of-00009.gguf",
+      "UD-IQ3_XXS/Kimi-K2-Instruct-UD-IQ3_XXS-00004-of-00009.gguf",
+      "UD-IQ3_XXS/Kimi-K2-Instruct-UD-IQ3_XXS-00005-of-00009.gguf",
+      "UD-IQ3_XXS/Kimi-K2-Instruct-UD-IQ3_XXS-00006-of-00009.gguf",
+      "UD-IQ3_XXS/Kimi-K2-Instruct-UD-IQ3_XXS-00007-of-00009.gguf",
+      "UD-IQ3_XXS/Kimi-K2-Instruct-UD-IQ3_XXS-00008-of-00009.gguf",
+      "UD-IQ3_XXS/Kimi-K2-Instruct-UD-IQ3_XXS-00009-of-00009.gguf"
+    ],
+    "remaining_seven": {
+      "status": "PASS",
+      "session_id": 17054,
+      "log": "/mnt/work/kimi-k2/k7/sha256-remaining-seven.log",
+      "manifest": "/mnt/work/kimi-k2/k7/checksums-remaining-seven.sha256",
+      "exit_code": 0
+    },
+    "first_two": {
+      "status": "PASS",
+      "exit_code": 0,
+      "log": "/mnt/work/kimi-k2/k7/sha256-first-two-retry.log"
+    }
+  },
+  "latest_live_observation": {
+    "observed_at": "2026-11-11T04:24:21.129142+00:00",
+    "completed_shards": 9,
+    "completed_bytes": 416622218560,
+    "jobs": {
+      "checksum_remaining_seven": {
+        "pid": 4165512,
+        "io": {
+          "rchar": 287080161894,
+          "wchar": 5872,
+          "syscr": 8761378,
+          "syscw": 20,
+          "read_bytes": 287081553920,
+          "write_bytes": 28672,
+          "cancelled_write_bytes": 0
+        }
+      }
+    }
+  },
+  "staging_observations": "/mnt/work/kimi-k2/k7/staging-observations.jsonl",
+  "execution": {
+    "status": "FAIL",
+    "evidence_directory": "/mnt/storage/models/strata-kimi-k2-evidence/k7-run7",
+    "sessions": {
+      "lucy_expert": 78594,
+      "astor_expert": 98571,
+      "suffix": 21631,
+      "coordinator": 95254
+    },
+    "observed": "run7 stopped after prolonged layer12 page-fault wait to apply corrected no-progress clock; first8 positions committed; full256+16 not completed",
+    "prior_attempt": "k7-run1: worker default 30-second idle deadline expired before coordinator; retained logs; run2 uses explicit600000ms worker timeout",
+    "first_full_logits": "/mnt/storage/models/strata-kimi-k2-evidence/k7-run2/first-full-logits.json",
+    "suffix_elapsed_seconds": 758.8588073253632,
+    "suffix_rss_hwm_kib": 28240856,
+    "next_fix": "full layer frame timeout3600000ms; explicit worker idle timeout3600000ms; unchanged weights, placement, prompt, arithmetic",
+    "prior_run2": {
+      "status": "FAIL",
+      "evidence_directory": "/mnt/storage/models/strata-kimi-k2-evidence/k7-run2",
+      "sessions": {
+        "lucy_expert": 22759,
+        "astor_expert": 56143,
+        "suffix": 63683,
+        "coordinator": 32942
+      },
+      "observed": "all61 layers completed first8-token window and163840 finite logits, but coordinator600000ms deadline expired before result",
+      "prior_attempt": "k7-run1: worker default 30-second idle deadline expired before coordinator; retained logs; run2 uses explicit600000ms worker timeout",
+      "first_full_logits": "/mnt/storage/models/strata-kimi-k2-evidence/k7-run2/first-full-logits.json",
+      "suffix_elapsed_seconds": 758.8588073253632,
+      "suffix_rss_hwm_kib": 28240856,
+      "next_fix": "full layer frame timeout3600000ms; explicit worker idle timeout3600000ms; unchanged weights, placement, prompt, arithmetic"
+    },
+    "first_committed_window": "/mnt/storage/models/strata-kimi-k2-evidence/k7-run7/first-committed-window.json",
+    "failure": "CPU expert pool stalled:0 of6 jobs done,0 of2 workers parked",
+    "suffix_exit": {
+      "exit_code": -6,
+      "elapsed_seconds": 2084.374110221863,
+      "rss_hwm_kib": 32013848
+    },
+    "remaining": "replay actual layer59 captured MoE input through unchanged pool to isolate observed stall; full256+16 not completed",
+    "run5_failure": {
+      "status": "FAIL",
+      "evidence_directory": "/mnt/storage/models/strata-kimi-k2-evidence/k7-run5",
+      "sessions": {
+        "lucy_expert": 48367,
+        "astor_expert": 46927,
+        "suffix": 74025,
+        "coordinator": 44416
+      },
+      "observed": "first8 positions committed; second8-token window completed layer58, then layer59 CPU pool no-completion watchdog aborted after60s",
+      "prior_attempt": "k7-run1: worker default 30-second idle deadline expired before coordinator; retained logs; run2 uses explicit600000ms worker timeout",
+      "first_full_logits": "/mnt/storage/models/strata-kimi-k2-evidence/k7-run2/first-full-logits.json",
+      "suffix_elapsed_seconds": 758.8588073253632,
+      "suffix_rss_hwm_kib": 28240856,
+      "next_fix": "full layer frame timeout3600000ms; explicit worker idle timeout3600000ms; unchanged weights, placement, prompt, arithmetic",
+      "prior_run2": {
+        "status": "FAIL",
+        "evidence_directory": "/mnt/storage/models/strata-kimi-k2-evidence/k7-run2",
+        "sessions": {
+          "lucy_expert": 22759,
+          "astor_expert": 56143,
+          "suffix": 63683,
+          "coordinator": 32942
+        },
+        "observed": "all61 layers completed first8-token window and163840 finite logits, but coordinator600000ms deadline expired before result",
+        "prior_attempt": "k7-run1: worker default 30-second idle deadline expired before coordinator; retained logs; run2 uses explicit600000ms worker timeout",
+        "first_full_logits": "/mnt/storage/models/strata-kimi-k2-evidence/k7-run2/first-full-logits.json",
+        "suffix_elapsed_seconds": 758.8588073253632,
+        "suffix_rss_hwm_kib": 28240856,
+        "next_fix": "full layer frame timeout3600000ms; explicit worker idle timeout3600000ms; unchanged weights, placement, prompt, arithmetic"
+      },
+      "first_committed_window": "/mnt/storage/models/strata-kimi-k2-evidence/k7-run5/first-committed-window.json",
+      "failure": "CPU expert pool stalled:0 of6 jobs done,0 of2 workers parked",
+      "suffix_exit": {
+        "exit_code": -6,
+        "elapsed_seconds": 2084.374110221863,
+        "rss_hwm_kib": 32013848
+      },
+      "remaining": "replay actual layer59 captured MoE input through unchanged pool to isolate observed stall; full256+16 not completed"
+    },
+    "timeout_replays": "both backend outputs byte-identical with original60s-watchdog replay",
+    "telemetry": {
+      "sample_interval_seconds": 2,
+      "prefix": "/mnt/storage/models/strata-kimi-k2-evidence/k7-run7/prefix.memory-timeline.jsonl",
+      "suffix": "/mnt/storage/models/strata-kimi-k2-evidence/k7-run7/suffix.memory-timeline.jsonl",
+      "sampler_sessions": {
+        "lucy": 86955,
+        "astor": 59696
+      },
+      "scope": "whole-device VRAM; owner process status/RSS HWM; routes/interface/NFS counters"
+    },
+    "worker_idle_failure": {
+      "lucy": {
+        "exit_code": 0,
+        "elapsed_seconds": 3656.2570424079895,
+        "rss_hwm_kib": 309432
+      },
+      "astor": {
+        "exit_code": 0,
+        "elapsed_seconds": 3641.577812194824,
+        "rss_hwm_kib": 238072
+      }
+    },
+    "run6_failure": {
+      "status": "FAIL",
+      "evidence_directory": "/mnt/storage/models/strata-kimi-k2-evidence/k7-run6",
+      "sessions": {
+        "lucy_expert": 2530,
+        "astor_expert": 14307,
+        "suffix": 28504,
+        "coordinator": 81733
+      },
+      "observed": "run6 expert workers expired3600000ms idle deadline while owners still executing second window; owned layer processes stopped, captures retained",
+      "prior_attempt": "k7-run1: worker default 30-second idle deadline expired before coordinator; retained logs; run2 uses explicit600000ms worker timeout",
+      "first_full_logits": "/mnt/storage/models/strata-kimi-k2-evidence/k7-run2/first-full-logits.json",
+      "suffix_elapsed_seconds": 758.8588073253632,
+      "suffix_rss_hwm_kib": 28240856,
+      "next_fix": "full layer frame timeout3600000ms; explicit worker idle timeout3600000ms; unchanged weights, placement, prompt, arithmetic",
+      "prior_run2": {
+        "status": "FAIL",
+        "evidence_directory": "/mnt/storage/models/strata-kimi-k2-evidence/k7-run2",
+        "sessions": {
+          "lucy_expert": 22759,
+          "astor_expert": 56143,
+          "suffix": 63683,
+          "coordinator": 32942
+        },
+        "observed": "all61 layers completed first8-token window and163840 finite logits, but coordinator600000ms deadline expired before result",
+        "prior_attempt": "k7-run1: worker default 30-second idle deadline expired before coordinator; retained logs; run2 uses explicit600000ms worker timeout",
+        "first_full_logits": "/mnt/storage/models/strata-kimi-k2-evidence/k7-run2/first-full-logits.json",
+        "suffix_elapsed_seconds": 758.8588073253632,
+        "suffix_rss_hwm_kib": 28240856,
+        "next_fix": "full layer frame timeout3600000ms; explicit worker idle timeout3600000ms; unchanged weights, placement, prompt, arithmetic"
+      },
+      "first_committed_window": "/mnt/storage/models/strata-kimi-k2-evidence/k7-run6/first-committed-window.json",
+      "failure": "CPU expert pool stalled:0 of6 jobs done,0 of2 workers parked",
+      "suffix_exit": {
+        "exit_code": -6,
+        "elapsed_seconds": 2084.374110221863,
+        "rss_hwm_kib": 32013848
+      },
+      "remaining": "replay actual layer59 captured MoE input through unchanged pool to isolate observed stall; full256+16 not completed",
+      "run5_failure": {
+        "status": "FAIL",
+        "evidence_directory": "/mnt/storage/models/strata-kimi-k2-evidence/k7-run5",
+        "sessions": {
+          "lucy_expert": 48367,
+          "astor_expert": 46927,
+          "suffix": 74025,
+          "coordinator": 44416
+        },
+        "observed": "first8 positions committed; second8-token window completed layer58, then layer59 CPU pool no-completion watchdog aborted after60s",
+        "prior_attempt": "k7-run1: worker default 30-second idle deadline expired before coordinator; retained logs; run2 uses explicit600000ms worker timeout",
+        "first_full_logits": "/mnt/storage/models/strata-kimi-k2-evidence/k7-run2/first-full-logits.json",
+        "suffix_elapsed_seconds": 758.8588073253632,
+        "suffix_rss_hwm_kib": 28240856,
+        "next_fix": "full layer frame timeout3600000ms; explicit worker idle timeout3600000ms; unchanged weights, placement, prompt, arithmetic",
+        "prior_run2": {
+          "status": "FAIL",
+          "evidence_directory": "/mnt/storage/models/strata-kimi-k2-evidence/k7-run2",
+          "sessions": {
+            "lucy_expert": 22759,
+            "astor_expert": 56143,
+            "suffix": 63683,
+            "coordinator": 32942
+          },
+          "observed": "all61 layers completed first8-token window and163840 finite logits, but coordinator600000ms deadline expired before result",
+          "prior_attempt": "k7-run1: worker default 30-second idle deadline expired before coordinator; retained logs; run2 uses explicit600000ms worker timeout",
+          "first_full_logits": "/mnt/storage/models/strata-kimi-k2-evidence/k7-run2/first-full-logits.json",
+          "suffix_elapsed_seconds": 758.8588073253632,
+          "suffix_rss_hwm_kib": 28240856,
+          "next_fix": "full layer frame timeout3600000ms; explicit worker idle timeout3600000ms; unchanged weights, placement, prompt, arithmetic"
+        },
+        "first_committed_window": "/mnt/storage/models/strata-kimi-k2-evidence/k7-run5/first-committed-window.json",
+        "failure": "CPU expert pool stalled:0 of6 jobs done,0 of2 workers parked",
+        "suffix_exit": {
+          "exit_code": -6,
+          "elapsed_seconds": 2084.374110221863,
+          "rss_hwm_kib": 32013848
+        },
+        "remaining": "replay actual layer59 captured MoE input through unchanged pool to isolate observed stall; full256+16 not completed"
+      },
+      "timeout_replays": "both backend outputs byte-identical with original60s-watchdog replay",
+      "telemetry": {
+        "astor": "/mnt/storage/models/strata-kimi-k2-evidence/k7-run6/astor-vram-rss-timeline.jsonl",
+        "lucy": "/mnt/storage/models/strata-kimi-k2-evidence/k7-run6/lucy-vram-rss-timeline.jsonl",
+        "interval_seconds": 2,
+        "scope": "whole-device VRAM, owner process status/RSS HWM; other services may contribute",
+        "sampler_sessions": {
+          "astor": 6587,
+          "lucy": 26055
+        }
+      },
+      "worker_idle_failure": {
+        "lucy": {
+          "exit_code": 0,
+          "elapsed_seconds": 3656.2570424079895,
+          "rss_hwm_kib": 309432
+        },
+        "astor": {
+          "exit_code": 0,
+          "elapsed_seconds": 3641.577812194824,
+          "rss_hwm_kib": 238072
+        }
+      }
+    },
+    "stop_reason": "confirmed source clock-reset bug in loaded pool build; replacement both-backend replays passed; no full-inference success claimed",
+    "terminal_exits": {
+      "prefix": {
+        "exit_code": -15,
+        "elapsed_seconds": 4125.342906951904,
+        "rss_hwm_kib": 1296140
+      },
+      "suffix": {
+        "exit_code": -15,
+        "elapsed_seconds": 4152.287051439285,
+        "rss_hwm_kib": 14656408
+      },
+      "lucy-expert": {
+        "exit_code": 0,
+        "elapsed_seconds": 4165.093789100647,
+        "rss_hwm_kib": 301172
+      },
+      "astor-expert": {
+        "exit_code": 0,
+        "elapsed_seconds": 4163.948255062103,
+        "rss_hwm_kib": 236508
+      }
+    },
+    "raw_captures_read_only": true
+  },
+  "failure_replay": {
+    "capture_directory": "/mnt/storage/models/strata-kimi-k2-evidence/k7-layer59-replay",
+    "lucy_elapsed_seconds": 3.555281162261963,
+    "astor_elapsed_seconds": 9.492744207382202,
+    "max_absolute_difference": 9.5367431640625e-07,
+    "relative_rms_difference": 8.693288988890142e-08,
+    "finite": true,
+    "watchdog_seconds": 60,
+    "conclusion": "isolated replay did not reproduce original no-completion stall; root cause unconfirmed"
+  },
+  "next_fix": "Opt-in PING/PONG keepalive in existing NetworkExpertExecutor I/O thread; preserve default behavior",
+  "keepalive_check": {
+    "status": "PASS",
+    "worker_idle_timeout_ms": 5000,
+    "client_idle_seconds": 12,
+    "keepalive_interval_ms": 1000,
+    "pong_count": 11,
+    "finite": true,
+    "max_absolute_difference": 7.548806024715304e-11,
+    "real_expert_assignments": 1,
+    "fallbacks": 0,
+    "scope": "existing executor PING/PONG survives idle beyond worker deadline then executes original real K2 expert assignment"
+  },
+  "pool_clock_correction": "/mnt/storage/models/strata-kimi-k2-evidence/k7-layer12-replay/clock-fix.json",
+  "one_queue_replay": {
+    "capture_directory": "/mnt/storage/models/strata-kimi-k2-evidence/k7-layer12-replay",
+    "runtime_setting": "GPU_MAX_HW_QUEUES=1 only in new K2 HIP processes",
+    "result": "byte-identical to default-queue HIP output for exact layer12 input",
+    "elapsed_seconds": 7.0291924476623535,
+    "scope": "bounded operator replay, not full-model or performance qualification",
+    "reference": "https://rocm.docs.amd.com/en/docs-7.2.2/reference/env-variables.html"
+  },
+  "hardware_coordination": {
+    "observed_at": 1794385119.5228505,
+    "gpu_jobs_active": 0,
+    "policy": "canonical atomic-directory lease required for every model run, GPU/operator probe and heavy CPU/RAM/NFS fixture; ordinary builds and source edits allowed; no stealing or service changes",
+    "lock_root": "/mnt/storage/strata-hardware/locks",
+    "gpu_execution_authorized_now": false,
+    "cpu_only_source_builds_authorized": true,
+    "pending": "both host reservations must become available through Q3 completion and coordinated cleanup",
+    "canonical_cli": "/mnt/code/projects/Strata/tools/hardware_lock.py",
+    "owner_observed": "deepseek-q3-retry5",
+    "unit_observed": "strata-q3-r5-20261111.service",
+    "resources": [
+      "lucy.gpu0",
+      "astor.gpu0"
+    ],
+    "future_owner": "kimi-k2",
+    "future_thread": "d7f95b1d-9358-49ce-8e05-b44115b911b6",
+    "unit_state_observed": "active/running"
+  },
+  "cpu_only_clock_check": {
+    "status": "PASS",
+    "command": "strata-kimi2-cpu-expert /mnt/work/kimi-k2/k4/expert0 /mnt/work/kimi-k2/k7/cpu-clock --f32",
+    "log": "/mnt/work/kimi-k2/k7/cpu-clock.log",
+    "scope": "three real input rows through existing CPU pool; exact serial parity; GPU not used; no stalled-wait timing exercised"
+  },
+  "next_launcher": {
+    "path": "tools/kimi-k2/full-job.sh",
+    "validation": "bash -n PASS; git diff --check PASS",
+    "runtime": "NOT RUN; shared reservations remain held by Q3",
+    "lease": "canonical hardware_lock.py run with both host keys; exact parent owner/token validation; job waits through local/remote cleanup",
+    "service_changes": "none"
+  }
+}
