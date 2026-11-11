@@ -1,8 +1,13 @@
 # Experimental distributed inference in this fork
 
-This fork of [Strata](https://github.com/Niko1221/Strata) runs one model across
-heterogeneous Linux computers. NVIDIA/CUDA and AMD/HIP layer owners can execute
-parts of the same inference, with remote expert execution and file-backed weights.
+This fork of [Strata](https://github.com/Niko1221/Strata) has completed autoregressive
+decoding with one model split across NVIDIA/CUDA and AMD/HIP computers. Layer
+owners transfer activations and the required boundary state across the network;
+the generated token feeds back into the same distributed model for the next step.
+Both machines can also serve remote expert calls while file-backed weights supply
+their resident working sets. The completed DeepSeek and Kimi runs are documented
+below, with their different execution and quality limits.
+
 The purpose is to run models that exceed one machine's resident memory. Speed and
 quality refinement are deferred; working inference is the current milestone.
 
@@ -31,6 +36,39 @@ backing on pve01. These machines do not hold the entire large checkpoint in VRAM
 or RAM. SSD/NFS mappings supply weights outside the resident working set.
 
 ## How execution is distributed
+
+The Kimi K2 demonstration used the direction shown below: CUDA on Lucy owns the
+prefix and HIP on Astor owns the suffix. The measured DeepSeek placements used
+the reverse layer-owner direction. Each diagram arrow describes data movement,
+not a transfer of GPU pointers or a copy of the complete model.
+
+```mermaid
+flowchart LR
+    subgraph Lucy[Lucy: RTX 3080 / CUDA]
+        token[Input token / next-token sampler]
+        prefix[CUDA-owned prefix layers]
+        lexpert[Expert worker: local memory tiers]
+        token --> prefix
+    end
+    subgraph Astor[Astor: RX 6800 / HIP]
+        suffix[HIP-owned suffix layers]
+        aexpert[Expert worker: local memory tiers]
+    end
+    prefix -->|Layer activations / boundary state| suffix
+    suffix -->|Logits returned for next-token selection| token
+    prefix <-->|Expert request / contribution| aexpert
+    suffix <-->|Expert request / contribution| lexpert
+    weights[(Immutable file-backed weights: NFS / SSD)]
+    weights -->|Working set| prefix
+    weights -->|Working set| suffix
+    weights -->|Working set| lexpert
+    weights -->|Working set| aexpert
+```
+
+The solid layer path and token feedback form one autoregressive inference loop.
+Expert calls are separate exchanges in either direction. A worker's local tiers
+depend on the configured model path; this diagram does not imply that remote
+experts ran on GPUs in every recorded experiment.
 
 A layer owner runs its assigned dense attention, routing and shared-expert work.
 At the partition boundary it sends activation/state records to the next owner;
